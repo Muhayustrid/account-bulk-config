@@ -8,10 +8,11 @@ from frappe import _
 from frappe.utils import cint
 from frappe.utils.xlsxutils import build_xlsx_response, read_xlsx_file_from_attached_file
 
-from account_bulk_config.api.batch import TARGETS
+from account_bulk_config.api.batch import CHILD_DOCTYPES, TARGETS
 from account_bulk_config.api.company_accounts import get_rows as get_company_rows
 from account_bulk_config.api.fields import COMPANY_FIELDS, ITEM_DEFAULT_FIELDS
 from account_bulk_config.api.item_defaults import get_rows as get_item_rows
+from account_bulk_config.api.mode_of_payment import get_rows as get_mop_rows
 
 COMPANY_EXPORT_FIELDS = [f["fieldname"] for f in COMPANY_FIELDS]
 ITEM_EXPORT_FIELDS = [f["fieldname"] for f in ITEM_DEFAULT_FIELDS if not f.get("read_only")]
@@ -46,7 +47,7 @@ def export_sheet(target: str, template: int = 0, **filters) -> None:
 
 	is_template = bool(cint(template))
 
-	allowed = COMPANY_EXPORT_FIELDS if target == "company" else ITEM_EXPORT_FIELDS
+	allowed = [f["fieldname"] for f in TARGETS[target][2] if not f.get("read_only")]
 	export_fields = allowed
 	if filters.get("fields"):
 		wanted = filters["fields"]
@@ -72,6 +73,23 @@ def export_sheet(target: str, template: int = 0, **filters) -> None:
 			else:
 				rows.append([r["name"]] + [r.get(f) or "" for f in export_fields])
 		filename = f"bulk-company-{'template' if is_template else 'accounts'}"
+	elif target == "mode_of_payment":
+		headers = ["name", "company"] + export_fields
+		data = get_mop_rows(
+			mode_of_payment=filters.get("mode_of_payment"),
+			parent_company=filters.get("parent_company"),
+			company=filters.get("company"),
+			start=0,
+			page_length=0,
+		)
+		rows = [headers]
+		for r in data.get("rows", []):
+			key = [r["name"], r["company"]]
+			if is_template:
+				rows.append(key + ["" for _ in export_fields])
+			else:
+				rows.append(key + [r.get(f) or "" for f in export_fields])
+		filename = f"bulk-mode_of_payment-{'template' if is_template else 'accounts'}"
 	else:
 		# item_name is a read-only aid for humans; "name" stays the import key (names are not unique)
 		label_cols = ["item_name"] if target == "item" else []
@@ -117,12 +135,11 @@ def import_sheet(target: str, file_url: str) -> dict:
 	if not raw_headers:
 		return {"changes": [], "errors": [{"row": 1, "message": _("Missing header row")}]}
 
+	allowed_fields = [f["fieldname"] for f in TARGETS[target][2] if not f.get("read_only")]
 	if target == "company":
 		key_columns = ["company"]
-		allowed_fields = COMPANY_EXPORT_FIELDS
 	else:
 		key_columns = ["name", "company"]
-		allowed_fields = ITEM_EXPORT_FIELDS
 
 	# item_name comes from our own export; it is display only and never imported
 	valid_columns = set(key_columns) | set(allowed_fields) | ({"item_name"} if target == "item" else set())
@@ -199,7 +216,7 @@ def import_sheet(target: str, file_url: str) -> dict:
 
 			existing = (
 				frappe.db.get_value(
-					"Item Default",
+					CHILD_DOCTYPES[target],
 					{"parent": name, "company": comp, "parenttype": parent_doctype},
 					fields_to_check,
 					as_dict=True,

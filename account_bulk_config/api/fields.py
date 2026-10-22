@@ -431,14 +431,26 @@ ITEM_DEFAULT_FIELDS = [
 	},
 ]
 
+MOP_FIELDS = [
+	{
+		"fieldname": "default_account",
+		"label": "Default Account",
+		"link": "Account",
+		"group": "core",
+		"filters": {"account_type": ["in", ["Bank", "Cash", "Receivable"]]},
+	},
+]
+
 
 @frappe.whitelist()
 def get_field_meta(target: str) -> list[dict]:
-	"""Return column metadata for the given target (company, item, item_group)."""
+	"""Return column metadata for the given target (company, item, item_group, mode_of_payment)."""
 	if target == "company":
 		return COMPANY_FIELDS
 	if target in ("item", "item_group"):
 		return ITEM_DEFAULT_FIELDS
+	if target == "mode_of_payment":
+		return MOP_FIELDS
 	frappe.throw(f"Invalid target: {target}")
 
 

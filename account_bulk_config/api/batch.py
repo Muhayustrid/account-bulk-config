@@ -7,12 +7,19 @@ from contextlib import suppress
 import frappe
 from frappe import _
 
-from account_bulk_config.api.fields import COMPANY_FIELDS, ITEM_DEFAULT_FIELDS, validate_link
+from account_bulk_config.api.fields import COMPANY_FIELDS, ITEM_DEFAULT_FIELDS, MOP_FIELDS, validate_link
 
 TARGETS = {
 	"company": ("Company", None, COMPANY_FIELDS),
 	"item": ("Item", "item_defaults", ITEM_DEFAULT_FIELDS),
 	"item_group": ("Item Group", "item_group_defaults", ITEM_DEFAULT_FIELDS),
+	"mode_of_payment": ("Mode of Payment", "accounts", MOP_FIELDS),
+}
+
+CHILD_DOCTYPES = {
+	"item": "Item Default",
+	"item_group": "Item Default",
+	"mode_of_payment": "Mode of Payment Account",
 }
 
 
@@ -240,6 +247,21 @@ def apply_changes(target: str, changes: list[dict], progress_callback=None) -> l
 					row = doc
 				else:
 					row = next((r for r in (doc.get(child_table_field) or []) if r.company == comp), None)
+					if target == "mode_of_payment":
+						# Mode of Payment Account requires default_account matching company.
+						# ERPNext validation rejects empty account rows, so remove if empty.
+						new_acc = next(
+							(
+								c.get("new") or None
+								for c in comp_changes[comp]
+								if c["field"] == "default_account"
+							),
+							getattr(row, "default_account", None) if row else None,
+						)
+						if not new_acc:
+							if row:
+								doc.remove(row)
+							continue
 					if not row:
 						row = doc.append(child_table_field, {"company": comp})
 

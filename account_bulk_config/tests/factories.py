@@ -12,6 +12,7 @@ CHILD_B_ABBR = "BACB"
 ITEM_1 = "BAC-ITEM-1"
 ITEM_2 = "BAC-ITEM-2"
 ITEM_GROUP = "BAC Group"
+MOP_1 = "BAC MoP"
 
 
 def _setup_company(
@@ -85,6 +86,35 @@ def setup_world() -> None:
 					"item_group": ITEM_GROUP,
 					"stock_uom": "Nos",
 					"is_stock_item": 1,
+				}
+			).insert()
+
+	# Ensure Mode of Payment exists
+	if not frappe.db.exists("Mode of Payment", MOP_1):
+		frappe.get_doc(
+			{
+				"doctype": "Mode of Payment",
+				"mode_of_payment": MOP_1,
+				"type": "Cash",
+				"enabled": 1,
+			}
+		).insert()
+
+	# Ensure Cash accounts exist for test companies
+	for comp in (PARENT, CHILD_A, CHILD_B):
+		if not frappe.db.exists("Account", {"account_name": "Cash", "company": comp, "is_group": 0}):
+			parent_acct = frappe.db.get_value(
+				"Account", {"account_name": "Cash In Hand", "company": comp, "is_group": 1}, "name"
+			) or frappe.db.get_value(
+				"Account", {"root_type": "Asset", "company": comp, "is_group": 1}, "name"
+			)
+			frappe.get_doc(
+				{
+					"doctype": "Account",
+					"account_name": "Cash",
+					"company": comp,
+					"parent_account": parent_acct,
+					"account_type": "Cash",
 				}
 			).insert()
 

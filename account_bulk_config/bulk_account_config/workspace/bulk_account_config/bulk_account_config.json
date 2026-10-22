@@ -1,7 +1,7 @@
 {
  "app": "account_bulk_config",
  "charts": [],
- "content": "[{\"id\": \"bac_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Bulk Account Config</b></span>\", \"col\": 12}}, {\"id\": \"bac_sc_company\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Company Accounts\", \"col\": 4}}, {\"id\": \"bac_sc_item\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Item Defaults\", \"col\": 4}}]",
+ "content": "[{\"id\": \"bac_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Bulk Account Config</b></span>\", \"col\": 12}}, {\"id\": \"bac_sc_company\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Company Accounts\", \"col\": 4}}, {\"id\": \"bac_sc_item\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Item Defaults\", \"col\": 4}}, {\"id\": \"bac_sc_mop\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Mode of Payment\", \"col\": 4}}]",
  "creation": "2026-10-21 00:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -38,6 +38,13 @@
    "doc_view": "",
    "label": "Bulk Item Defaults",
    "link_to": "bulk-item-defaults",
+   "type": "Page"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "",
+   "label": "Bulk Mode of Payment",
+   "link_to": "bulk-mode-of-payment",
    "type": "Page"
   }
  ],

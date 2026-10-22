@@ -5,7 +5,7 @@ import json
 import frappe
 from frappe import _
 
-from account_bulk_config.api.batch import TARGETS
+from account_bulk_config.api.batch import CHILD_DOCTYPES, TARGETS
 from account_bulk_config.api.fields import COMPANY_SCOPED
 
 
@@ -125,7 +125,7 @@ def preview_propagation(
 				parent_name = c.get("name")
 				current = (
 					frappe.db.get_value(
-						"Item Default",
+						CHILD_DOCTYPES[target],
 						{"parenttype": parenttype, "parent": parent_name, "company": child},
 						field_name,
 					)

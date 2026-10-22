@@ -11,7 +11,7 @@
 	class BulkGrid {
 		constructor(opts) {
 			this.page = opts.page;
-			this.target = opts.target; // String or function returning target ("company", "item", "item_group")
+			this.target = opts.target; // String or function returning target ("company", "item", "item_group", "mode_of_payment")
 			this.key_columns = opts.key_columns || [];
 			this.get_rows_config = opts.get_rows || {};
 			this.get_column_groups = opts.get_column_groups || (() => ["core"]);
@@ -832,6 +832,7 @@
 				search: { label: __("Cari company"), fieldtype: "Data" },
 				item_group: { label: __("Item Group"), fieldtype: "Link", options: "Item Group" },
 				item: { label: __("Item"), fieldtype: "Link", options: "Item" },
+				mode_of_payment: { label: __("Mode of Payment"), fieldtype: "Link", options: "Mode of Payment" },
 			};
 			const filterKeys = Object.keys(filters).filter(
 				(k) => filterDefs[k] && (k !== "item" || target === "item")
@@ -961,6 +962,30 @@
 			d.show();
 		}
 
+		_get_parent_target_config(target) {
+			const map = {
+				item: {
+					doctype: "Item Default",
+					parenttype: "Item",
+					key: "item",
+					msg: __("Pilih Item di filter terlebih dahulu"),
+				},
+				item_group: {
+					doctype: "Item Default",
+					parenttype: "Item Group",
+					key: "item_group",
+					msg: __("Pilih Item Group di filter terlebih dahulu"),
+				},
+				mode_of_payment: {
+					doctype: "Mode of Payment Account",
+					parenttype: "Mode of Payment",
+					key: "mode_of_payment",
+					msg: __("Pilih Mode of Payment di filter terlebih dahulu"),
+				},
+			};
+			return map[target] || map.item_group;
+		}
+
 		copy_from_outlet_dialog() {
 			const target = this.getTarget();
 			const d = new frappe.ui.Dialog({
@@ -1026,23 +1051,19 @@
 							});
 						});
 					} else {
+						const cfg = this._get_parent_target_config(target);
 						const filters =
 							typeof this.get_export_filters === "function" ? this.get_export_filters() : {};
-						const induk = target === "item" ? filters.item : filters.item_group;
+						const induk = filters[cfg.key];
 						if (!induk) {
-							frappe.msgprint(
-								target === "item"
-									? __("Pilih Item di filter terlebih dahulu")
-									: __("Pilih Item Group di filter terlebih dahulu")
-							);
+							frappe.msgprint(cfg.msg);
 							return;
 						}
-						const parenttype = target === "item" ? "Item" : "Item Group";
 						frappe.call({
 							method: "frappe.client.get_value",
 							args: {
-								doctype: "Item Default",
-								filters: { parenttype: parenttype, parent: induk, company: src },
+								doctype: cfg.doctype,
+								filters: { parenttype: cfg.parenttype, parent: induk, company: src },
 								fieldname: fieldnames,
 							},
 							callback: (r) => {
@@ -1148,23 +1169,19 @@
 							});
 						});
 					} else {
+						const cfg = this._get_parent_target_config(target);
 						const filters =
 							typeof this.get_export_filters === "function" ? this.get_export_filters() : {};
-						const induk = target === "item" ? filters.item : filters.item_group;
+						const induk = filters[cfg.key];
 						if (!induk) {
-							frappe.msgprint(
-								target === "item"
-									? __("Pilih Item di filter terlebih dahulu")
-									: __("Pilih Item Group di filter terlebih dahulu")
-							);
+							frappe.msgprint(cfg.msg);
 							return;
 						}
-						const parenttype = target === "item" ? "Item" : "Item Group";
 						frappe.call({
 							method: "frappe.client.get_value",
 							args: {
-								doctype: "Item Default",
-								filters: { parenttype: parenttype, parent: induk, company: grp },
+								doctype: cfg.doctype,
+								filters: { parenttype: cfg.parenttype, parent: induk, company: grp },
 								fieldname: fieldnames,
 							},
 							callback: (r) => {
