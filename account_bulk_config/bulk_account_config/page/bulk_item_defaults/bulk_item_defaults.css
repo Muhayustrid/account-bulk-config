@@ -16,6 +16,9 @@
 }
 
 #page-bulk-item-defaults .page-form {
+	/* link dropdowns (z-index 4) must sit above the DataTable sticky header (also 4) */
+	position: relative;
+	z-index: 5;
 	display: flex;
 	flex-wrap: wrap;
 	align-items: flex-end;
