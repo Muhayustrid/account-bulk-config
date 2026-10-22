@@ -1,0 +1,46 @@
+{
+ "app": "account_bulk_config",
+ "charts": [],
+ "content": "[{\"id\": \"bac_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Bulk Account Config</b></span>\", \"col\": 12}}, {\"id\": \"bac_sc_company\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Company Accounts\", \"col\": 4}}, {\"id\": \"bac_sc_item\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Item Defaults\", \"col\": 4}}]",
+ "creation": "2026-10-21 00:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "hide_custom": 0,
+ "icon": "settings",
+ "idx": 0,
+ "indicator_color": "blue",
+ "is_hidden": 0,
+ "label": "Bulk Account Config",
+ "link_type": "DocType",
+ "links": [],
+ "modified": "2026-10-21 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Bulk Account Config",
+ "name": "Bulk Account Config",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 0.0,
+ "shortcuts": [
+  {
+   "color": "Grey",
+   "doc_view": "",
+   "label": "Bulk Company Accounts",
+   "link_to": "bulk-company-accounts",
+   "type": "Page"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "",
+   "label": "Bulk Item Defaults",
+   "link_to": "bulk-item-defaults",
+   "type": "Page"
+  }
+ ],
+ "title": "Bulk Account Config",
+ "type": "Workspace"
+}
