@@ -74,7 +74,6 @@ class BulkCompanyAccountsPage {
 				{ label: __("Uang muka, kurs, beban beli"), value: "advance", description: "" },
 				{ label: __("Aset & deferred"), value: "asset", description: "" },
 			],
-			default: ["core"],
 			change: this._later(() => {
 				this.grid._render();
 			}),
@@ -131,7 +130,8 @@ class BulkCompanyAccountsPage {
 			},
 			get_column_groups: () => {
 				const val = this.column_groups_field ? this.column_groups_field.get_value() : null;
-				return val && (Array.isArray(val) ? val.length : val) ? val : ["core"];
+				// no group picked = show every group, so no column is silently hidden
+				return val && (Array.isArray(val) ? val.length : val) ? val : this.column_groups_field.df.options.map((o) => o.value);
 			},
 			get_export_filters: () => ({
 				parent_company: this.parent_company_field ? this.parent_company_field.get_value() : null,

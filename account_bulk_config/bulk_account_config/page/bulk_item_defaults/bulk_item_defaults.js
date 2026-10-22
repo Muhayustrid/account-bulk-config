@@ -123,7 +123,6 @@ class BulkItemDefaultsPage {
 				{ label: __("Akun lanjutan"), value: "advanced", description: "" },
 				{ label: __("Deferred"), value: "deferred", description: "" },
 			],
-			default: ["stock_price", "core"],
 			change: this._later(() => {
 				this.grid._render();
 			}),
@@ -194,7 +193,8 @@ class BulkItemDefaultsPage {
 			},
 			get_column_groups: () => {
 				const val = this.column_groups_field ? this.column_groups_field.get_value() : null;
-				return val && (Array.isArray(val) ? val.length : val) ? val : ["stock_price", "core"];
+				// no group picked = show every group, so no column is silently hidden
+				return val && (Array.isArray(val) ? val.length : val) ? val : this.column_groups_field.df.options.map((o) => o.value);
 			},
 			get_export_filters: () => {
 				const mode = this.mode_field ? this.mode_field.get_value() : "item_group";
