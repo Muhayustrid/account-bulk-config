@@ -823,21 +823,69 @@
 		}
 
 		export_excel(is_template) {
+			// Dialog pre-filled from the page filters; the user can narrow rows and pick columns freely
+			const target = this.getTarget();
 			const filters = typeof this.get_export_filters === "function" ? this.get_export_filters() : {};
-			const params = new URLSearchParams({
-				target: this.getTarget(),
-				template: is_template ? "1" : "0",
-			});
-			for (const [k, v] of Object.entries(filters)) {
-				if (v !== undefined && v !== null && v !== "") {
-					params.set(k, v);
-				}
-			}
-			window.open(
-				frappe.urllib.get_full_url(
-					`/api/method/account_bulk_config.api.excel.export_sheet?${params.toString()}`
-				)
+			const filterDefs = {
+				parent_company: { label: __("Parent Company"), fieldtype: "Link", options: "Company" },
+				company: { label: __("Company"), fieldtype: "Link", options: "Company" },
+				search: { label: __("Cari company"), fieldtype: "Data" },
+				item_group: { label: __("Item Group"), fieldtype: "Link", options: "Item Group" },
+				item: { label: __("Item"), fieldtype: "Link", options: "Item" },
+			};
+			const filterKeys = Object.keys(filters).filter(
+				(k) => filterDefs[k] && (k !== "item" || target === "item")
 			);
+			const activeGroups = this._get_active_groups();
+			const fieldOptions = (this.field_meta[target] || [])
+				.filter((f) => !f.read_only)
+				.map((f) => ({ label: __(f.label), value: f.fieldname, checked: activeGroups.includes(f.group) }));
+
+			const d = new frappe.ui.Dialog({
+				title: __("Export Excel"),
+				size: "large",
+				fields: [
+					{
+						fieldname: "kind",
+						label: __("Isi"),
+						fieldtype: "Select",
+						options: [
+							{ label: __("Data saat ini"), value: "0" },
+							{ label: __("Template kosong"), value: "1" },
+						],
+						default: is_template ? "1" : "0",
+					},
+					...filterKeys.map((k) => Object.assign({ fieldname: k, default: filters[k] || "" }, filterDefs[k])),
+					{ fieldtype: "Section Break", label: __("Kolom") },
+					{
+						fieldname: "fields",
+						fieldtype: "MultiCheck",
+						options: fieldOptions,
+						columns: 2,
+						select_all: true,
+						sort_options: false,
+					},
+				],
+				primary_action_label: __("Export"),
+				primary_action: (values) => {
+					const fields = d.fields_dict.fields.get_checked_options();
+					if (!fields.length) {
+						frappe.msgprint(__("Pilih minimal satu kolom"));
+						return;
+					}
+					const params = new URLSearchParams({ target, template: values.kind, fields: fields.join(",") });
+					filterKeys.forEach((k) => {
+						if (values[k]) params.set(k, values[k]);
+					});
+					window.open(
+						frappe.urllib.get_full_url(
+							`/api/method/account_bulk_config.api.excel.export_sheet?${params.toString()}`
+						)
+					);
+					d.hide();
+				},
+			});
+			d.show();
 		}
 
 		import_dialog() {

@@ -46,8 +46,19 @@ def export_sheet(target: str, template: int = 0, **filters) -> None:
 
 	is_template = bool(cint(template))
 
+	allowed = COMPANY_EXPORT_FIELDS if target == "company" else ITEM_EXPORT_FIELDS
+	export_fields = allowed
+	if filters.get("fields"):
+		wanted = filters["fields"]
+		if isinstance(wanted, str):
+			wanted = json.loads(wanted) if wanted.startswith("[") else wanted.split(",")
+		unknown = [f for f in wanted if f not in allowed]
+		if unknown:
+			frappe.throw(_("Unknown field(s): {0}").format(", ".join(unknown)))
+		export_fields = [f for f in allowed if f in wanted]
+
 	if target == "company":
-		headers = ["company"] + COMPANY_EXPORT_FIELDS
+		headers = ["company"] + export_fields
 		data = get_company_rows(
 			parent_company=filters.get("parent_company"),
 			search=filters.get("search"),
@@ -57,12 +68,14 @@ def export_sheet(target: str, template: int = 0, **filters) -> None:
 		rows = [headers]
 		for r in data.get("rows", []):
 			if is_template:
-				rows.append([r["name"]] + ["" for _ in COMPANY_EXPORT_FIELDS])
+				rows.append([r["name"]] + ["" for _ in export_fields])
 			else:
-				rows.append([r["name"]] + [r.get(f) or "" for f in COMPANY_EXPORT_FIELDS])
+				rows.append([r["name"]] + [r.get(f) or "" for f in export_fields])
 		filename = f"bulk-company-{'template' if is_template else 'accounts'}"
 	else:
-		headers = ["name", "company"] + ITEM_EXPORT_FIELDS
+		# item_name is a read-only aid for humans; "name" stays the import key (names are not unique)
+		label_cols = ["item_name"] if target == "item" else []
+		headers = ["name", *label_cols, "company"] + export_fields
 		data = get_item_rows(
 			target=target,
 			item_group=filters.get("item_group"),
@@ -74,10 +87,11 @@ def export_sheet(target: str, template: int = 0, **filters) -> None:
 		)
 		rows = [headers]
 		for r in data.get("rows", []):
+			key = [r["name"], *([r["label"]] if label_cols else []), r["company"]]
 			if is_template:
-				rows.append([r["name"], r["company"]] + ["" for _ in ITEM_EXPORT_FIELDS])
+				rows.append(key + ["" for _ in export_fields])
 			else:
-				rows.append([r["name"], r["company"]] + [r.get(f) or "" for f in ITEM_EXPORT_FIELDS])
+				rows.append(key + [r.get(f) or "" for f in export_fields])
 		filename = f"bulk-{target}-{'template' if is_template else 'defaults'}"
 
 	build_xlsx_response(rows, filename)
@@ -110,7 +124,8 @@ def import_sheet(target: str, file_url: str) -> dict:
 		key_columns = ["name", "company"]
 		allowed_fields = ITEM_EXPORT_FIELDS
 
-	valid_columns = set(key_columns) | set(allowed_fields)
+	# item_name comes from our own export; it is display only and never imported
+	valid_columns = set(key_columns) | set(allowed_fields) | ({"item_name"} if target == "item" else set())
 
 	missing_keys = [k for k in key_columns if k not in raw_headers]
 	if missing_keys:
@@ -150,7 +165,7 @@ def import_sheet(target: str, file_url: str) -> dict:
 			if not fields_to_check:
 				continue
 
-			db_vals = frappe.db.get_value("Company", comp, fields_to_check, as_dict=True) or {}
+			db_vals = frappe.db.get_value("Company", comp, [*fields_to_check, "is_group"], as_dict=True) or {}
 			for field, col_idx in field_indices.items():
 				new_val = _clean_cell(_cell(row, col_idx))
 				old_val = db_vals.get(field) or None
@@ -161,6 +176,9 @@ def import_sheet(target: str, file_url: str) -> dict:
 						"field": field,
 						"old": old_val,
 						"new": new_val,
+						# lets the page offer propagation to child companies on save
+						"company_is_group": cint(db_vals.get("is_group")),
+						"is_group": cint(db_vals.get("is_group")),
 					})
 		else:
 			raw_name = _cell(row, name_idx)
@@ -189,6 +207,7 @@ def import_sheet(target: str, file_url: str) -> dict:
 				or {}
 			)
 
+			comp_is_group = cint(frappe.db.get_value("Company", comp, "is_group"))
 			for field, col_idx in field_indices.items():
 				new_val = _clean_cell(_cell(row, col_idx))
 				old_val = existing.get(field) or None
@@ -199,6 +218,7 @@ def import_sheet(target: str, file_url: str) -> dict:
 						"field": field,
 						"old": old_val,
 						"new": new_val,
+						"company_is_group": comp_is_group,
 					})
 
 	return {"changes": changes, "errors": errors}

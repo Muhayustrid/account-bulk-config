@@ -143,9 +143,10 @@ class TestExcel(IntegrationTestCase):
 		export_sheet("item", template=0, item_group=ITEM_GROUP, parent_company=PARENT)
 		self.assertEqual(frappe.response["type"], "binary")
 		rows = self._read_export_rows()
-		self.assertEqual(rows[0][:2], ["name", "company"])
-		self.assertEqual(len(rows[0]), len(ITEM_EXPORT_FIELDS) + 2)
+		self.assertEqual(rows[0][:3], ["name", "item_name", "company"])
+		self.assertEqual(len(rows[0]), len(ITEM_EXPORT_FIELDS) + 3)
 		self.assertEqual(len(rows), 7)  # header + 2 items * 3 companies = 6 data rows
+		self.assertEqual(rows[1][:2], [ITEM_1, frappe.db.get_value("Item", ITEM_1, "item_name")])
 
 		frappe.local.response = frappe._dict()
 		export_sheet("item", template=1, item_group=ITEM_GROUP, parent_company=PARENT)
@@ -153,8 +154,45 @@ class TestExcel(IntegrationTestCase):
 		for r in rows[1:]:
 			self.assertIsNotNone(r[0])
 			self.assertIsNotNone(r[1])
-			for cell in r[2:]:
+			self.assertIsNotNone(r[2])
+			for cell in r[3:]:
 				self.assertIn(cell, (None, ""))
+
+		frappe.local.response = frappe._dict()
+		export_sheet("item_group", template=0, item_group=ITEM_GROUP, parent_company=PARENT)
+		self.assertEqual(self._read_export_rows()[0][:2], ["name", "company"])
+
+	def test_import_ignores_item_name_column(self):
+		sales_a = acct("Sales", CHILD_A)
+		url = self._sheet([
+			["name", "item_name", "company", "income_account"],
+			[ITEM_1, "any label", CHILD_A, sales_a],
+		])
+		out = import_sheet("item", url)
+		self.assertEqual(out["errors"], [])
+		self.assertEqual([(c["name"], c["field"], c["new"]) for c in out["changes"]], [(ITEM_1, "income_account", sales_a)])
+
+	def test_import_flags_group_company(self):
+		url = self._sheet([
+			["company", "default_income_account"],
+			[PARENT, acct("Service", PARENT)],
+			[CHILD_A, acct("Service", CHILD_A)],
+		])
+		out = import_sheet("company", url)
+		flags = {c["company"]: c["company_is_group"] for c in out["changes"]}
+		self.assertEqual(flags, {PARENT: 1, CHILD_A: 0})
+
+	def test_export_selected_fields(self):
+		frappe.local.response = frappe._dict()
+		export_sheet("company", parent_company=PARENT, fields='["default_income_account"]')
+		self.assertEqual(self._read_export_rows()[0], ["company", "default_income_account"])
+
+		frappe.local.response = frappe._dict()
+		export_sheet("item", item_group=ITEM_GROUP, parent_company=PARENT, fields="income_account")
+		self.assertEqual(self._read_export_rows()[0], ["name", "item_name", "company", "income_account"])
+
+		with self.assertRaises(frappe.ValidationError):
+			export_sheet("company", parent_company=PARENT, fields='["abbr"]')
 
 	def test_get_rows_unbounded_page_length(self):
 		from account_bulk_config.api.company_accounts import get_rows as get_company_rows
