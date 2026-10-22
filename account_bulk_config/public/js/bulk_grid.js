@@ -343,6 +343,7 @@
 				if (control.df) control.df.get_query = () => ({ filters: queryFilters });
 			}
 
+			this._float_dropdown(control);
 			control.set_value(value);
 			control.toggle_label(false);
 			control.toggle_description(false);
@@ -399,6 +400,36 @@
 					return Promise.resolve(val);
 				},
 			};
+		}
+
+		_float_dropdown(control) {
+			// .dt-scrollable (overflow auto, sized to the rows) clips the link suggestions; pin them to the viewport
+			const ul = control.awesomplete && control.awesomplete.ul;
+			const input = control.$input && control.$input[0];
+			if (!ul || !input) return;
+			const place = () => {
+				const r = input.getBoundingClientRect();
+				Object.assign(ul.style, {
+					position: "fixed",
+					top: `${r.bottom}px`,
+					left: `${r.left}px`,
+					width: `${r.width}px`,
+					zIndex: 1020,
+				});
+			};
+			input.addEventListener("awesomplete-open", () => {
+				this._open_dropdown = { ul, place };
+				place();
+			});
+			if (this._dropdown_listening) return;
+			this._dropdown_listening = true;
+			const follow = () => {
+				const d = this._open_dropdown;
+				if (d && d.ul.isConnected && !d.ul.hidden) d.place();
+			};
+			// capture: the scrolling element is the DataTable body or the page, not the input
+			window.addEventListener("scroll", follow, true);
+			window.addEventListener("resize", follow);
 		}
 
 		_pager(total) {
