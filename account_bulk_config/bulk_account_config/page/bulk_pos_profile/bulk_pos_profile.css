@@ -36,6 +36,12 @@
 	min-height: 200px;
 }
 
+/* DataTable sizes the body to the rows; with few rows the horizontal scrollbar would cover the last row */
+.bac-datatable-wrapper .dt-scrollable {
+	box-sizing: content-box;
+	padding-bottom: 14px;
+}
+
 .bac-sub {
 	font-size: 11px;
 	color: var(--text-muted);
