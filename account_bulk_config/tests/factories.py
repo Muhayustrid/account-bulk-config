@@ -157,3 +157,45 @@ def make_user_with_roles(email: str, roles: list[str]) -> str:
 	frappe.clear_cache(user=email)
 	frappe.db.commit()
 	return email
+
+
+POS_MOP = "BAC POS MoP"
+POS_A1 = "BAC POS A1"
+POS_A2 = "BAC POS A2"
+POS_B = "BAC POS B"
+
+
+def setup_pos_profiles() -> None:
+	"""Idempotent: two profiles for CHILD_A (a company can own several) and one for CHILD_B."""
+	setup_world()
+	if not frappe.db.exists("Mode of Payment", POS_MOP):
+		mop = frappe.get_doc({"doctype": "Mode of Payment", "mode_of_payment": POS_MOP, "type": "Cash", "enabled": 1})
+		for comp in (CHILD_A, CHILD_B):
+			mop.append("accounts", {"company": comp, "default_account": acct("Cash", comp)})
+		mop.insert()
+
+	for name, comp in ((POS_A1, CHILD_A), (POS_A2, CHILD_A), (POS_B, CHILD_B)):
+		abbr = frappe.db.get_value("Company", comp, "abbr")
+		values = {
+			"warehouse": f"Stores - {abbr}",
+			"write_off_account": acct("Write Off", comp),
+			"write_off_cost_center": f"Main - {abbr}",
+			"cost_center": None,
+			"account_for_change_amount": None,
+		}
+		if frappe.db.exists("POS Profile", name):
+			frappe.db.set_value("POS Profile", name, values)
+			continue
+		doc = frappe.get_doc(
+			{
+				"doctype": "POS Profile",
+				"__newname": name,
+				"company": comp,
+				"currency": "IDR",
+				"write_off_limit": 1,
+				"payments": [{"mode_of_payment": POS_MOP, "default": 1}],
+				**values,
+			}
+		)
+		doc.insert()
+	frappe.db.commit()

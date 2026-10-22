@@ -13,6 +13,7 @@ from account_bulk_config.api.company_accounts import get_rows as get_company_row
 from account_bulk_config.api.fields import COMPANY_FIELDS, ITEM_DEFAULT_FIELDS
 from account_bulk_config.api.item_defaults import get_rows as get_item_rows
 from account_bulk_config.api.mode_of_payment import get_rows as get_mop_rows
+from account_bulk_config.api.pos_profile import get_rows as get_pos_rows
 
 COMPANY_EXPORT_FIELDS = [f["fieldname"] for f in COMPANY_FIELDS]
 ITEM_EXPORT_FIELDS = [f["fieldname"] for f in ITEM_DEFAULT_FIELDS if not f.get("read_only")]
@@ -73,15 +74,25 @@ def export_sheet(target: str, template: int = 0, **filters) -> None:
 			else:
 				rows.append([r["name"]] + [r.get(f) or "" for f in export_fields])
 		filename = f"bulk-company-{'template' if is_template else 'accounts'}"
-	elif target == "mode_of_payment":
+	elif target in ("mode_of_payment", "pos_profile"):
 		headers = ["name", "company"] + export_fields
-		data = get_mop_rows(
-			mode_of_payment=filters.get("mode_of_payment"),
-			parent_company=filters.get("parent_company"),
-			company=filters.get("company"),
-			start=0,
-			page_length=0,
-		)
+		if target == "mode_of_payment":
+			data = get_mop_rows(
+				mode_of_payment=filters.get("mode_of_payment"),
+				parent_company=filters.get("parent_company"),
+				company=filters.get("company"),
+				start=0,
+				page_length=0,
+			)
+		else:
+			data = get_pos_rows(
+				pos_profile=filters.get("pos_profile"),
+				parent_company=filters.get("parent_company"),
+				company=filters.get("company"),
+				include_disabled=filters.get("include_disabled") or 0,
+				start=0,
+				page_length=0,
+			)
 		rows = [headers]
 		for r in data.get("rows", []):
 			key = [r["name"], r["company"]]
@@ -89,7 +100,7 @@ def export_sheet(target: str, template: int = 0, **filters) -> None:
 				rows.append(key + ["" for _ in export_fields])
 			else:
 				rows.append(key + [r.get(f) or "" for f in export_fields])
-		filename = f"bulk-mode_of_payment-{'template' if is_template else 'accounts'}"
+		filename = f"bulk-{target}-{'template' if is_template else 'accounts'}"
 	else:
 		# item_name is a read-only aid for humans; "name" stays the import key (names are not unique)
 		label_cols = ["item_name"] if target == "item" else []
@@ -214,17 +225,26 @@ def import_sheet(target: str, file_url: str) -> dict:
 			if not fields_to_check:
 				continue
 
-			existing = (
-				frappe.db.get_value(
-					CHILD_DOCTYPES[target],
-					{"parent": name, "company": comp, "parenttype": parent_doctype},
-					fields_to_check,
-					as_dict=True,
+			if target == "pos_profile":
+				existing = frappe.db.get_value(parent_doctype, name, [*fields_to_check, "company"], as_dict=True)
+				if existing.company != comp:
+					errors.append(
+						{"row": row_num, "message": _("POS Profile {0} belongs to {1}").format(name, existing.company)}
+					)
+					continue
+			else:
+				existing = (
+					frappe.db.get_value(
+						CHILD_DOCTYPES[target],
+						{"parent": name, "company": comp, "parenttype": parent_doctype},
+						fields_to_check,
+						as_dict=True,
+					)
+					or {}
 				)
-				or {}
-			)
 
-			comp_is_group = cint(frappe.db.get_value("Company", comp, "is_group"))
+			# POS Profile rows belong to one company, so there is nothing to propagate
+			comp_is_group = 0 if target == "pos_profile" else cint(frappe.db.get_value("Company", comp, "is_group"))
 			for field, col_idx in field_indices.items():
 				new_val = _clean_cell(_cell(row, col_idx))
 				old_val = existing.get(field) or None

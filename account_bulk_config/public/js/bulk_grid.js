@@ -76,6 +76,8 @@
 			this.page.add_menu_item(__("Export Excel"), () => this.export_excel(false));
 			this.page.add_menu_item(__("Download Template"), () => this.export_excel(true));
 			this.page.add_menu_item(__("Import Excel"), () => this.import_dialog());
+			// POS Profile rows have no per-company child rows to copy or propagate
+			if (this.getTarget() === "pos_profile") return;
 			this.page.add_menu_item(__("Copy from Outlet"), () => this.copy_from_outlet_dialog());
 			this.page.add_menu_item(__("Terapkan ke anak…"), () => this.apply_to_children_dialog());
 		}
@@ -839,6 +841,8 @@
 				item_group: { label: __("Item Group"), fieldtype: "Link", options: "Item Group" },
 				item: { label: __("Item"), fieldtype: "Link", options: "Item" },
 				mode_of_payment: { label: __("Mode of Payment"), fieldtype: "Link", options: "Mode of Payment" },
+				pos_profile: { label: __("POS Profile"), fieldtype: "Link", options: "POS Profile" },
+				include_disabled: { label: __("Termasuk nonaktif"), fieldtype: "Check" },
 			};
 			const filterKeys = Object.keys(filters).filter(
 				(k) => filterDefs[k] && (k !== "item" || target === "item")

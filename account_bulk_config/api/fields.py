@@ -442,15 +442,71 @@ MOP_FIELDS = [
 ]
 
 
+# filters mirror the set_query of erpnext's pos_profile.js
+POS_PROFILE_FIELDS = [
+	{
+		"fieldname": "warehouse",
+		"label": "Warehouse",
+		"link": "Warehouse",
+		"group": "core",
+		"filters": {},
+	},
+	{
+		"fieldname": "income_account",
+		"label": "Income Account",
+		"link": "Account",
+		"group": "core",
+		"filters": {"account_type": "Income Account"},
+	},
+	{
+		"fieldname": "expense_account",
+		"label": "Expense Account",
+		"link": "Account",
+		"group": "core",
+		"filters": {"report_type": "Profit and Loss"},
+	},
+	{
+		"fieldname": "cost_center",
+		"label": "Cost Center",
+		"link": "Cost Center",
+		"group": "core",
+		"filters": {},
+	},
+	{
+		"fieldname": "account_for_change_amount",
+		"label": "Account for Change Amount",
+		"link": "Account",
+		"group": "core",
+		"filters": {"account_type": ["in", ["Cash", "Bank"]]},
+	},
+	{
+		"fieldname": "write_off_account",
+		"label": "Write Off Account",
+		"link": "Account",
+		"group": "core",
+		"filters": {"report_type": "Profit and Loss"},
+	},
+	{
+		"fieldname": "write_off_cost_center",
+		"label": "Write Off Cost Center",
+		"link": "Cost Center",
+		"group": "core",
+		"filters": {},
+	},
+]
+
+
 @frappe.whitelist()
 def get_field_meta(target: str) -> list[dict]:
-	"""Return column metadata for the given target (company, item, item_group, mode_of_payment)."""
+	"""Return column metadata for the given target (company, item, item_group, mode_of_payment, pos_profile)."""
 	if target == "company":
 		return COMPANY_FIELDS
 	if target in ("item", "item_group"):
 		return ITEM_DEFAULT_FIELDS
 	if target == "mode_of_payment":
 		return MOP_FIELDS
+	if target == "pos_profile":
+		return POS_PROFILE_FIELDS
 	frappe.throw(f"Invalid target: {target}")
 
 

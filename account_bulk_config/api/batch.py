@@ -7,13 +7,21 @@ from contextlib import suppress
 import frappe
 from frappe import _
 
-from account_bulk_config.api.fields import COMPANY_FIELDS, ITEM_DEFAULT_FIELDS, MOP_FIELDS, validate_link
+from account_bulk_config.api.fields import (
+	COMPANY_FIELDS,
+	ITEM_DEFAULT_FIELDS,
+	MOP_FIELDS,
+	POS_PROFILE_FIELDS,
+	validate_link,
+)
 
 TARGETS = {
 	"company": ("Company", None, COMPANY_FIELDS),
 	"item": ("Item", "item_defaults", ITEM_DEFAULT_FIELDS),
 	"item_group": ("Item Group", "item_group_defaults", ITEM_DEFAULT_FIELDS),
 	"mode_of_payment": ("Mode of Payment", "accounts", MOP_FIELDS),
+	# one row per profile; "company" in a change is the profile's own company
+	"pos_profile": ("POS Profile", None, POS_PROFILE_FIELDS),
 }
 
 CHILD_DOCTYPES = {
@@ -182,7 +190,10 @@ def apply_changes(target: str, changes: list[dict], progress_callback=None) -> l
 		validation_error = None
 
 		for comp in doc_companies:
-			if target == "company":
+			if target == "pos_profile" and comp != doc.company:
+				validation_error = _("POS Profile {0} belongs to {1}, not {2}").format(doc_name, doc.company, comp)
+				break
+			if not child_table_field:
 				row = doc
 			else:
 				row = next((r for r in (doc.get(child_table_field) or []) if r.company == comp), None)
@@ -243,7 +254,7 @@ def apply_changes(target: str, changes: list[dict], progress_callback=None) -> l
 		frappe.db.savepoint(sp)
 		try:
 			for comp in companies_to_apply:
-				if target == "company":
+				if not child_table_field:
 					row = doc
 				else:
 					row = next((r for r in (doc.get(child_table_field) or []) if r.company == comp), None)
@@ -273,7 +284,7 @@ def apply_changes(target: str, changes: list[dict], progress_callback=None) -> l
 			frappe.db.release_savepoint(sp)
 
 			for comp in companies_to_apply:
-				if target == "company":
+				if not child_table_field:
 					saved_row = doc
 				else:
 					saved_row = next(
