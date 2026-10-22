@@ -748,11 +748,17 @@
 			const title = __("Menyimpan perubahan");
 			const results = [];
 			let done = 0;
+			const hideProgress = () => {
+				const dialog = frappe.cur_progress;
+				frappe.hide_progress();
+				// Bootstrap ignores hide() while the fade-in still runs (fast saves); hide again once shown
+				if (dialog) dialog.$wrapper.one("shown.bs.modal", () => dialog.hide());
+			};
 
 			const next = () => {
 				if (done >= docs.length) {
 					this._saving = false;
-					frappe.hide_progress();
+					hideProgress();
 					this._handle_save_results(results);
 					return;
 				}
@@ -771,7 +777,7 @@
 					.catch(() => {
 						// remaining documents stay dirty so the user can retry
 						this._saving = false;
-						frappe.hide_progress();
+						hideProgress();
 						if (results.length) this._handle_save_results(results);
 					});
 			};
