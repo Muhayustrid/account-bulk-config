@@ -151,7 +151,8 @@ class BulkItemDefaultsPage {
 					const label = (r && r.label) || value;
 					const link = `<a href="/app/${frappe.router.slug(docType)}/${encodeURIComponent(value)}" class="ellipsis font-weight-bold" title="${frappe.utils.escape_html(value)}">${frappe.utils.escape_html(label)}</a>`;
 					const code = label !== value ? `<div class="bac-sub ellipsis">${frappe.utils.escape_html(value)}</div>` : "";
-					return `<div style="display: flex; align-items: center;"><div style="min-width: 0;">${link}${code}</div>${newBadge}</div>`;
+					// badge sits on the name line; centred against the two-line block it dropped below the cell
+					return `<div style="min-width: 0;"><div style="display: flex; align-items: center; min-width: 0;">${link}${newBadge}</div>${code}</div>`;
 				},
 			},
 			{
