@@ -1,11 +1,13 @@
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from account_bulk_config.api.propagation import descendants, map_value, preview_propagation
+from account_bulk_config.api.propagation import descendants, map_value, preview_copy, preview_propagation
 from account_bulk_config.tests.factories import (
 	CHILD_A,
 	CHILD_B,
 	ITEM_1,
+	ITEM_2,
+	ITEM_GROUP,
 	PARENT,
 	acct,
 	setup_world,
@@ -123,3 +125,41 @@ class TestPropagation(IntegrationTestCase):
 		self.assertEqual(rows[0]["company"], CHILD_B)
 		self.assertEqual(rows[0]["name"], CHILD_B)
 		self.assertEqual(rows[0]["new"], acct("Service", CHILD_B))
+
+	def test_preview_query_count_independent_of_rows(self):
+		fields = ["income_account", "expense_account", "default_warehouse", "default_price_list"]
+		chgs = [
+			{"name": n, "company": PARENT, "field": f, "old": None, "new": acct("Sales", PARENT)}
+			for n in (ITEM_1, ITEM_2)
+			for f in fields
+		]
+		preview_propagation("item", chgs)  # warm doctype meta caches; only data queries are counted
+		# is_group + descendants + abbrs + one existence check per link doctype + current values
+		with self.assertQueryCount(8, query_type=("select",)):
+			rows = preview_propagation("item", chgs * 10)
+		self.assertEqual(len(rows), len(chgs) * 10 * 2)
+
+	def test_preview_copy_without_filter_child_to_parent(self):
+		frappe.db.delete("Item Default", {"parent": ["in", [ITEM_1, ITEM_2, ITEM_GROUP]]})
+		for parent, parenttype in ((ITEM_1, "Item"), (ITEM_2, "Item")):
+			doc = frappe.get_doc(parenttype, parent)
+			doc.append("item_defaults", {"company": CHILD_A, "income_account": acct("Sales", CHILD_A)})
+			doc.save()
+		out = preview_copy("item", CHILD_A, ["income_account"], targets=[PARENT])
+		self.assertEqual({c["name"] for c in out["changes"]}, {ITEM_1, ITEM_2})
+		by_item = {r["name"]: r for r in out["rows"]}
+		self.assertEqual(set(by_item), {ITEM_1, ITEM_2})
+		self.assertEqual(by_item[ITEM_1]["company"], PARENT)
+		self.assertEqual(by_item[ITEM_1]["new"], acct("Sales", PARENT))
+		self.assertEqual(by_item[ITEM_1]["status"], "changed")
+
+	def test_preview_copy_item_group_filter(self):
+		frappe.db.delete("Item Default", {"parent": ["in", [ITEM_1, ITEM_2, ITEM_GROUP]]})
+		doc = frappe.get_doc("Item", ITEM_1)
+		doc.append("item_defaults", {"company": PARENT, "income_account": acct("Sales", PARENT)})
+		doc.save()
+		# the filter group's subtree holds ITEM_1; an unrelated group holds none of the test items
+		out = preview_copy("item", PARENT, ["income_account"], item_group=ITEM_GROUP, depth="children")
+		self.assertEqual({(r["name"], r["company"]) for r in out["rows"]}, {(ITEM_1, CHILD_A), (ITEM_1, CHILD_B)})
+		empty = preview_copy("item", PARENT, ["income_account"], item_group="Ghost Group")
+		self.assertEqual(empty, {"changes": [], "rows": []})

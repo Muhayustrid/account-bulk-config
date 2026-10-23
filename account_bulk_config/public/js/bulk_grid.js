@@ -78,7 +78,7 @@
 			this.page.add_menu_item(__("Import Excel"), () => this.import_dialog());
 			// POS Profile rows have no per-company child rows to copy or propagate
 			if (this.getTarget() === "pos_profile") return;
-			this.page.add_menu_item(__("Copy from Outlet"), () => this.copy_from_outlet_dialog());
+			this.page.add_menu_item(__("Copy antar Company…"), () => this.copy_from_outlet_dialog());
 			this.page.add_menu_item(__("Terapkan ke anak…"), () => this.apply_to_children_dialog());
 		}
 
@@ -623,46 +623,77 @@
 				},
 			];
 
-			const propData = previewRows.map((r) => ({
-				company: r.company,
-				field: r.field,
-				old: r.old || "",
-				new: r.new || "",
-				status: r.status,
-			}));
+			// rows can number in the thousands: the table shows one page, r.checked holds the selection
+			const PAGE = 50;
+			let pageStart = 0;
+			previewRows.forEach((r) => {
+				r.checked = !!r.checked && r.status !== "not_found";
+			});
+			const pageRows = () => previewRows.slice(pageStart, pageStart + PAGE);
+			const $pager = $(
+				`<div class="bac-pager mt-2">
+					<span class="bac-pager-nav">
+						<button class="btn btn-xs btn-default" data-prop-prev>${__("Previous")}</button>
+						<button class="btn btn-xs btn-default" data-prop-next>${__("Next")}</button>
+					</span>
+					<span class="bac-sub text-muted" data-prop-range></span>
+				</div>`
+			);
+			dialog.get_field("table_area").$wrapper.append($pager);
 
 			// DataTable injects a <style> whose sheet is null until the modal is attached to the document
 			let dt;
-			dialog.$wrapper.one("shown.bs.modal", () => {
-				dt = new frappe.DataTable($tableWrapper[0], {
-					columns: propCols,
-					data: propData,
-					serialNoColumn: false,
-					checkboxColumn: true,
-					inlineFilters: false,
-					headerDropdown: [],
-					layout: "fluid",
-					cellHeight: 32,
-				});
-				previewRows.forEach((r, idx) => {
-					dt.rowmanager.checkRow(idx, !!r.checked && r.status !== "not_found");
-				});
+			function renderPage() {
+				const rows = pageRows();
+				const data = rows.map((r) => ({
+					company: r.company,
+					field: r.field,
+					old: r.old || "",
+					new: r.new || "",
+					status: r.status,
+				}));
+				if (!dt) {
+					dt = new frappe.DataTable($tableWrapper[0], {
+						columns: propCols,
+						data: data,
+						serialNoColumn: false,
+						checkboxColumn: true,
+						inlineFilters: false,
+						headerDropdown: [],
+						layout: "fluid",
+						cellHeight: 32,
+					});
+				} else {
+					dt.refresh(data);
+				}
+				rows.forEach((r, idx) => dt.rowmanager.checkRow(idx, r.checked));
+				const end = Math.min(previewRows.length, pageStart + PAGE);
+				$pager.find("[data-prop-prev]").prop("disabled", pageStart <= 0);
+				$pager.find("[data-prop-next]").prop("disabled", end >= previewRows.length);
+				$pager
+					.find("[data-prop-range]")
+					.text(`${previewRows.length ? pageStart + 1 : 0}–${end} ${__("of {0}", [previewRows.length])}`);
 				updateActionButtons();
+			}
+			dialog.$wrapper.one("shown.bs.modal", renderPage);
+			$pager.find("[data-prop-prev]").on("click", () => {
+				pageStart = Math.max(0, pageStart - PAGE);
+				renderPage();
 			});
+			$pager.find("[data-prop-next]").on("click", () => {
+				pageStart += PAGE;
+				renderPage();
+			});
+			// re-tick the visible page after a shortcut changed r.checked
+			const applyAll = (fn) => {
+				previewRows.forEach((r) => {
+					r.checked = r.status !== "not_found" && fn(r);
+				});
+				renderPage();
+			};
 
 			function getCheckedCount() {
-				let cnt = 0;
-				previewRows.forEach((r, idx) => {
-					if (
-						dt.rowmanager &&
-						dt.rowmanager.checkMap &&
-						dt.rowmanager.checkMap[idx] == 1 &&
-						r.status !== "not_found"
-					) {
-						cnt++;
-					}
-				});
-				return cnt;
+				return previewRows.filter((r) => r.checked).length;
 			}
 
 			function updateActionButtons() {
@@ -672,23 +703,9 @@
 						? __("Simpan induk + {0} anak", [checkedCount])
 						: __("Simpan"),
 					() => {
-						const childChanges = [];
-						previewRows.forEach((r, idx) => {
-							if (
-								dt.rowmanager &&
-								dt.rowmanager.checkMap &&
-								dt.rowmanager.checkMap[idx] == 1 &&
-								r.status !== "not_found"
-							) {
-								childChanges.push({
-									name: r.name,
-									company: r.company,
-									field: r.field,
-									old: r.old,
-									new: r.new,
-								});
-							}
-						});
+						const childChanges = previewRows
+							.filter((r) => r.checked)
+							.map((r) => ({ name: r.name, company: r.company, field: r.field, old: r.old, new: r.new }));
 						dialog.hide();
 						me._do_save(parentChanges.concat(childChanges));
 					}
@@ -697,11 +714,10 @@
 
 			dialog.$wrapper.on("click", 'input[type="checkbox"]', () => {
 				setTimeout(() => {
-					// the header "select all" also ticks rows that cannot be applied
-					previewRows.forEach((r, idx) => {
-						if (r.status === "not_found" && dt.rowmanager.checkMap[idx] == 1) {
-							dt.rowmanager.checkRow(idx, false);
-						}
+					// sync the visible page; the header "select all" also ticks rows that cannot be applied
+					pageRows().forEach((r, idx) => {
+						r.checked = dt.rowmanager.checkMap[idx] == 1 && r.status !== "not_found";
+						if (!r.checked) dt.rowmanager.checkRow(idx, false);
 					});
 					updateActionButtons();
 				}, 10);
@@ -716,26 +732,17 @@
 
 			dialog.$wrapper.find(".btn-check-all").on("click", (e) => {
 				e.preventDefault();
-				previewRows.forEach((r, idx) => {
-					dt.rowmanager.checkRow(idx, r.status !== "not_found");
-				});
-				updateActionButtons();
+				applyAll(() => true);
 			});
 
 			dialog.$wrapper.find(".btn-check-induk").on("click", (e) => {
 				e.preventDefault();
-				previewRows.forEach((r, idx) => {
-					dt.rowmanager.checkRow(idx, r.status === "changed");
-				});
-				updateActionButtons();
+				applyAll((r) => r.status === "changed");
 			});
 
 			dialog.$wrapper.find(".btn-uncheck-all").on("click", (e) => {
 				e.preventDefault();
-				previewRows.forEach((r, idx) => {
-					dt.rowmanager.checkRow(idx, false);
-				});
-				updateActionButtons();
+				applyAll(() => false);
 			});
 
 			dialog.set_secondary_action_label(__("Simpan induk saja"));
@@ -1003,34 +1010,37 @@
 			d.show();
 		}
 
-		_get_parent_target_config(target) {
-			const map = {
-				item: {
-					doctype: "Item Default",
-					parenttype: "Item",
-					key: "item",
-					msg: __("Pilih Item di filter terlebih dahulu"),
+		// copies the source company's rows of every parent matching the page filters (none = all)
+		_preview_copy(src, fieldnames, targets, depth, done) {
+			const filters = typeof this.get_export_filters === "function" ? this.get_export_filters() : {};
+			frappe.call({
+				method: "account_bulk_config.api.propagation.preview_copy",
+				args: {
+					target: this.getTarget(),
+					src_company: src,
+					fields: fieldnames,
+					item_group: filters.item_group || null,
+					item: filters.item || null,
+					mode_of_payment: filters.mode_of_payment || null,
+					targets: targets,
+					depth: depth,
 				},
-				item_group: {
-					doctype: "Item Default",
-					parenttype: "Item Group",
-					key: "item_group",
-					msg: __("Pilih Item Group di filter terlebih dahulu"),
+				freeze: true,
+				callback: (res) => {
+					const out = res.message || {};
+					if (!(out.changes || []).length) {
+						frappe.msgprint(__("Company sumber belum punya baris default untuk data yang difilter"));
+						return;
+					}
+					done(out.changes, out.rows || []);
 				},
-				mode_of_payment: {
-					doctype: "Mode of Payment Account",
-					parenttype: "Mode of Payment",
-					key: "mode_of_payment",
-					msg: __("Pilih Mode of Payment di filter terlebih dahulu"),
-				},
-			};
-			return map[target] || map.item_group;
+			});
 		}
 
 		copy_from_outlet_dialog() {
 			const target = this.getTarget();
 			const d = new frappe.ui.Dialog({
-				title: __("Copy from Outlet"),
+				title: __("Copy antar Company…"),
 				fields: [
 					{
 						fieldname: "src_company",
@@ -1092,49 +1102,9 @@
 							});
 						});
 					} else {
-						const cfg = this._get_parent_target_config(target);
-						const filters =
-							typeof this.get_export_filters === "function" ? this.get_export_filters() : {};
-						const induk = filters[cfg.key];
-						if (!induk) {
-							frappe.msgprint(cfg.msg);
-							return;
-						}
-						frappe.call({
-							method: "frappe.client.get_value",
-							args: {
-								doctype: cfg.doctype,
-								filters: { parenttype: cfg.parenttype, parent: induk, company: src },
-								fieldname: fieldnames,
-							},
-							callback: (r) => {
-								const values = r.message || {};
-								const changes = [];
-								activeFields.forEach((f) => {
-									const val = values[f.fieldname] || null;
-									changes.push({
-										name: induk,
-										company: src,
-										field: f.fieldname,
-										old: val,
-										new: val,
-									});
-								});
-
-								frappe.call({
-									method: "account_bulk_config.api.propagation.preview_propagation",
-									args: {
-										target: target,
-										changes: changes,
-										targets: dsts,
-									},
-									freeze: true,
-									callback: (res) => {
-										d.hide();
-										this._show_propagation_dialog(changes, res.message || [], "children", dsts);
-									},
-								});
-							},
+						this._preview_copy(src, fieldnames, dsts, "children", (changes, rows) => {
+							d.hide();
+							this._show_propagation_dialog(changes, rows, "children", dsts);
 						});
 					}
 				},
@@ -1210,49 +1180,9 @@
 							});
 						});
 					} else {
-						const cfg = this._get_parent_target_config(target);
-						const filters =
-							typeof this.get_export_filters === "function" ? this.get_export_filters() : {};
-						const induk = filters[cfg.key];
-						if (!induk) {
-							frappe.msgprint(cfg.msg);
-							return;
-						}
-						frappe.call({
-							method: "frappe.client.get_value",
-							args: {
-								doctype: cfg.doctype,
-								filters: { parenttype: cfg.parenttype, parent: induk, company: grp },
-								fieldname: fieldnames,
-							},
-							callback: (r) => {
-								const values = r.message || {};
-								const changes = [];
-								activeFields.forEach((f) => {
-									const val = values[f.fieldname] || null;
-									changes.push({
-										name: induk,
-										company: grp,
-										field: f.fieldname,
-										old: val,
-										new: val,
-									});
-								});
-
-								frappe.call({
-									method: "account_bulk_config.api.propagation.preview_propagation",
-									args: {
-										target: target,
-										changes: changes,
-										depth: depth,
-									},
-									freeze: true,
-									callback: (res) => {
-										d.hide();
-										this._show_propagation_dialog(changes, res.message || [], depth);
-									},
-								});
-							},
+						this._preview_copy(grp, fieldnames, null, depth, (changes, rows) => {
+							d.hide();
+							this._show_propagation_dialog(changes, rows, depth);
 						});
 					}
 				},
