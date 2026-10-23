@@ -76,8 +76,8 @@
 			this.page.add_menu_item(__("Export Excel"), () => this.export_excel(false));
 			this.page.add_menu_item(__("Download Template"), () => this.export_excel(true));
 			this.page.add_menu_item(__("Import Excel"), () => this.import_dialog());
-			// POS Profile rows have no per-company child rows to copy or propagate
-			if (this.getTarget() === "pos_profile") return;
+			// POS Profile and Warehouse rows have no per-company child rows to copy or propagate
+			if (this.getTarget() === "pos_profile" || this.getTarget() === "warehouse") return;
 			this.page.add_menu_item(__("Copy antar Company…"), () => this.copy_from_outlet_dialog());
 			this.page.add_menu_item(__("Terapkan ke anak…"), () => this.apply_to_children_dialog());
 		}
@@ -380,7 +380,7 @@
 							field: fieldname,
 							old: origVal,
 							new: cleanVal,
-							company_is_group: current.company_is_group || current.is_group || 0,
+							company_is_group: current.company_is_group != null ? current.company_is_group : (current.is_group || 0),
 							is_group: current.is_group || 0,
 						});
 					}
@@ -482,7 +482,10 @@
 		save() {
 			if (this.dirty.size === 0) return;
 			const changes = Array.from(this.dirty.values());
-			const hasGroupChange = changes.some((c) => c.company_is_group || c.is_group);
+			const hasGroupChange =
+				this.getTarget() !== "pos_profile" &&
+				this.getTarget() !== "warehouse" &&
+				changes.some((c) => c.company_is_group || c.is_group);
 
 			if (hasGroupChange) {
 				frappe.call({
@@ -880,7 +883,9 @@
 				item: { label: __("Item"), fieldtype: "Link", options: "Item" },
 				mode_of_payment: { label: __("Mode of Payment"), fieldtype: "Link", options: "Mode of Payment" },
 				pos_profile: { label: __("POS Profile"), fieldtype: "Link", options: "POS Profile" },
+				warehouse: { label: __("Warehouse"), fieldtype: "Link", options: "Warehouse" },
 				include_disabled: { label: __("Termasuk nonaktif"), fieldtype: "Check" },
+				include_group: { label: __("Termasuk grup"), fieldtype: "Check" },
 			};
 			const filterKeys = Object.keys(filters).filter(
 				(k) => filterDefs[k] && (k !== "item" || target === "item")

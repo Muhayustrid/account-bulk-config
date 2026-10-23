@@ -8,7 +8,7 @@ from frappe.tests import IntegrationTestCase
 
 class TestPagesAndWorkspace(IntegrationTestCase):
 	def test_page_files_and_render_include(self):
-		for page_name in ("bulk_company_accounts", "bulk_item_defaults"):
+		for page_name in ("bulk_company_accounts", "bulk_item_defaults", "bulk_warehouse_account"):
 			path = get_file_path("Bulk Account Config", "Page", page_name)
 			self.assertTrue(os.path.exists(path), f"JSON file missing: {path}")
 
@@ -32,6 +32,7 @@ class TestPagesAndWorkspace(IntegrationTestCase):
 		shortcuts = {s["link_to"]: s["type"] for s in data.get("shortcuts", [])}
 		self.assertEqual(shortcuts.get("bulk-company-accounts"), "Page")
 		self.assertEqual(shortcuts.get("bulk-item-defaults"), "Page")
+		self.assertEqual(shortcuts.get("bulk-warehouse-account"), "Page")
 
 	def test_app_screen_and_sidebar(self):
 		from account_bulk_config.api.permission import has_app_permission

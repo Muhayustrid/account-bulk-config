@@ -1,7 +1,7 @@
 {
  "app": "account_bulk_config",
  "charts": [],
- "content": "[{\"id\": \"bac_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Bulk Account Config</b></span>\", \"col\": 12}}, {\"id\": \"bac_sc_company\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Company Accounts\", \"col\": 4}}, {\"id\": \"bac_sc_item\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Item Defaults\", \"col\": 4}}, {\"id\": \"bac_sc_mop\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Mode of Payment\", \"col\": 4}}, {\"id\": \"bac_sc_pos\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk POS Profile\", \"col\": 4}}]",
+ "content": "[{\"id\": \"bac_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Bulk Account Config</b></span>\", \"col\": 12}}, {\"id\": \"bac_sc_company\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Company Accounts\", \"col\": 4}}, {\"id\": \"bac_sc_item\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Item Defaults\", \"col\": 4}}, {\"id\": \"bac_sc_mop\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Mode of Payment\", \"col\": 4}}, {\"id\": \"bac_sc_pos\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk POS Profile\", \"col\": 4}}, {\"id\": \"bac_sc_wh\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bulk Warehouse Account\", \"col\": 4}}]",
  "creation": "2026-10-21 00:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -14,7 +14,7 @@
  "label": "Bulk Account Config",
  "link_type": "DocType",
  "links": [],
- "modified": "2026-10-22 00:00:00.000000",
+ "modified": "2026-10-23 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Bulk Account Config",
  "name": "Bulk Account Config",
@@ -52,6 +52,13 @@
    "doc_view": "",
    "label": "Bulk POS Profile",
    "link_to": "bulk-pos-profile",
+   "type": "Page"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "",
+   "label": "Bulk Warehouse Account",
+   "link_to": "bulk-warehouse-account",
    "type": "Page"
   }
  ],

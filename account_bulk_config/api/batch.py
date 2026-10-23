@@ -12,6 +12,7 @@ from account_bulk_config.api.fields import (
 	ITEM_DEFAULT_FIELDS,
 	MOP_FIELDS,
 	POS_PROFILE_FIELDS,
+	WAREHOUSE_FIELDS,
 	validate_link,
 )
 
@@ -22,6 +23,8 @@ TARGETS = {
 	"mode_of_payment": ("Mode of Payment", "accounts", MOP_FIELDS),
 	# one row per profile; "company" in a change is the profile's own company
 	"pos_profile": ("POS Profile", None, POS_PROFILE_FIELDS),
+	# one row per warehouse; "company" in a change is the warehouse's own company
+	"warehouse": ("Warehouse", None, WAREHOUSE_FIELDS),
 }
 
 CHILD_DOCTYPES = {
@@ -190,8 +193,8 @@ def apply_changes(target: str, changes: list[dict], progress_callback=None) -> l
 		validation_error = None
 
 		for comp in doc_companies:
-			if target == "pos_profile" and comp != doc.company:
-				validation_error = _("POS Profile {0} belongs to {1}, not {2}").format(doc_name, doc.company, comp)
+			if target in ("pos_profile", "warehouse") and comp != doc.company:
+				validation_error = _("{0} {1} belongs to {2}, not {3}").format(doctype, doc_name, doc.company, comp)
 				break
 			if not child_table_field:
 				row = doc

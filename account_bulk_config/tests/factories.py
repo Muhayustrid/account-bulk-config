@@ -199,3 +199,45 @@ def setup_pos_profiles() -> None:
 		)
 		doc.insert()
 	frappe.db.commit()
+
+
+WH_A1 = f"Stores - {CHILD_A_ABBR}"
+WH_A2 = f"Finished Goods - {CHILD_A_ABBR}"
+WH_B = f"Stores - {CHILD_B_ABBR}"
+
+
+def setup_warehouses() -> None:
+	"""Idempotent: ensure warehouses exist for CHILD_A and CHILD_B with accounts reset."""
+	setup_world()
+	for comp in (CHILD_A, CHILD_B):
+		abbr = frappe.db.get_value("Company", comp, "abbr")
+		if not frappe.db.exists("Account", {"account_name": "Stock In Hand", "company": comp, "is_group": 0}):
+			parent_acct = frappe.db.get_value(
+				"Account", {"account_name": "Stock Assets", "company": comp, "is_group": 1}, "name"
+			) or frappe.db.get_value(
+				"Account", {"root_type": "Asset", "company": comp, "is_group": 1}, "name"
+			)
+			frappe.get_doc(
+				{
+					"doctype": "Account",
+					"account_name": "Stock In Hand",
+					"company": comp,
+					"parent_account": parent_acct,
+					"account_type": "Stock",
+				}
+			).insert()
+
+		for wh_name in (f"Stores - {abbr}", f"Finished Goods - {abbr}"):
+			if not frappe.db.exists("Warehouse", wh_name):
+				parent_wh = f"All Warehouses - {abbr}" if frappe.db.exists("Warehouse", f"All Warehouses - {abbr}") else None
+				frappe.get_doc(
+					{
+						"doctype": "Warehouse",
+						"warehouse_name": wh_name.rsplit(" - ", 1)[0],
+						"company": comp,
+						"parent_warehouse": parent_wh,
+					}
+				).insert()
+
+		frappe.db.set_value("Warehouse", {"company": comp}, {"account": None, "disabled": 0})
+	frappe.db.commit()

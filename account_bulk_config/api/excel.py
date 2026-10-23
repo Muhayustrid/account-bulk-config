@@ -14,6 +14,7 @@ from account_bulk_config.api.fields import COMPANY_FIELDS, ITEM_DEFAULT_FIELDS
 from account_bulk_config.api.item_defaults import get_rows as get_item_rows
 from account_bulk_config.api.mode_of_payment import get_rows as get_mop_rows
 from account_bulk_config.api.pos_profile import get_rows as get_pos_rows
+from account_bulk_config.api.warehouse import get_rows as get_warehouse_rows
 
 COMPANY_EXPORT_FIELDS = [f["fieldname"] for f in COMPANY_FIELDS]
 ITEM_EXPORT_FIELDS = [f["fieldname"] for f in ITEM_DEFAULT_FIELDS if not f.get("read_only")]
@@ -74,7 +75,7 @@ def export_sheet(target: str, template: int = 0, **filters) -> None:
 			else:
 				rows.append([r["name"]] + [r.get(f) or "" for f in export_fields])
 		filename = f"bulk-company-{'template' if is_template else 'accounts'}"
-	elif target in ("mode_of_payment", "pos_profile"):
+	elif target in ("mode_of_payment", "pos_profile", "warehouse"):
 		headers = ["name", "company"] + export_fields
 		if target == "mode_of_payment":
 			data = get_mop_rows(
@@ -84,12 +85,22 @@ def export_sheet(target: str, template: int = 0, **filters) -> None:
 				start=0,
 				page_length=0,
 			)
-		else:
+		elif target == "pos_profile":
 			data = get_pos_rows(
 				pos_profile=filters.get("pos_profile"),
 				parent_company=filters.get("parent_company"),
 				company=filters.get("company"),
 				include_disabled=filters.get("include_disabled") or 0,
+				start=0,
+				page_length=0,
+			)
+		else:
+			data = get_warehouse_rows(
+				warehouse=filters.get("warehouse"),
+				parent_company=filters.get("parent_company"),
+				company=filters.get("company"),
+				include_disabled=filters.get("include_disabled") or 0,
+				include_group=filters.get("include_group") or 0,
 				start=0,
 				page_length=0,
 			)
@@ -225,11 +236,11 @@ def import_sheet(target: str, file_url: str) -> dict:
 			if not fields_to_check:
 				continue
 
-			if target == "pos_profile":
+			if target in ("pos_profile", "warehouse"):
 				existing = frappe.db.get_value(parent_doctype, name, [*fields_to_check, "company"], as_dict=True)
 				if existing.company != comp:
 					errors.append(
-						{"row": row_num, "message": _("POS Profile {0} belongs to {1}").format(name, existing.company)}
+						{"row": row_num, "message": _("{0} {1} belongs to {2}").format(parent_doctype, name, existing.company)}
 					)
 					continue
 			else:
@@ -243,8 +254,8 @@ def import_sheet(target: str, file_url: str) -> dict:
 					or {}
 				)
 
-			# POS Profile rows belong to one company, so there is nothing to propagate
-			comp_is_group = 0 if target == "pos_profile" else cint(frappe.db.get_value("Company", comp, "is_group"))
+			# rows belong to one company, so there is nothing to propagate
+			comp_is_group = 0 if target in ("pos_profile", "warehouse") else cint(frappe.db.get_value("Company", comp, "is_group"))
 			for field, col_idx in field_indices.items():
 				new_val = _clean_cell(_cell(row, col_idx))
 				old_val = existing.get(field) or None

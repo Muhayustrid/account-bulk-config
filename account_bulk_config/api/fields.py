@@ -496,9 +496,21 @@ POS_PROFILE_FIELDS = [
 ]
 
 
+# filters mirror the set_query of erpnext's warehouse.js
+WAREHOUSE_FIELDS = [
+	{
+		"fieldname": "account",
+		"label": "Account",
+		"link": "Account",
+		"group": "core",
+		"filters": {"account_type": "Stock"},
+	},
+]
+
+
 @frappe.whitelist()
 def get_field_meta(target: str) -> list[dict]:
-	"""Return column metadata for the given target (company, item, item_group, mode_of_payment, pos_profile)."""
+	"""Return column metadata for the given target (company, item, item_group, mode_of_payment, pos_profile, warehouse)."""
 	if target == "company":
 		return COMPANY_FIELDS
 	if target in ("item", "item_group"):
@@ -507,6 +519,8 @@ def get_field_meta(target: str) -> list[dict]:
 		return MOP_FIELDS
 	if target == "pos_profile":
 		return POS_PROFILE_FIELDS
+	if target == "warehouse":
+		return WAREHOUSE_FIELDS
 	frappe.throw(f"Invalid target: {target}")
 
 
