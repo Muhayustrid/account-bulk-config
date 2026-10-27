@@ -28,9 +28,24 @@
 
 			this._setup_actions();
 			this._setup_beforeunload();
+			BulkGrid._inject_styles();
 
 			this.$root = $('<div class="bac-page">').appendTo(this.page.main);
 			this.$root.html(`<p class="text-muted">${__("Loading...")}</p>`);
+		}
+
+		static _inject_styles() {
+			if (typeof document === "undefined" || document.getElementById("bac-sheet-styles")) return;
+			const style = document.createElement("style");
+			style.id = "bac-sheet-styles";
+			style.textContent = `
+				.bac-fill-handle { position: absolute; right: 0; bottom: 0; width: 7px; height: 7px; z-index: 3;
+					background: var(--primary, #2490ef); border: 1px solid var(--card-bg, #fff); cursor: crosshair; }
+				.dt-cell.bac-fill-preview { box-shadow: inset 0 0 0 1px var(--primary, #2490ef);
+					background-color: var(--dt-selection-highlight-color, var(--bg-light-gray)) !important; }
+				body.bac-filling, body.bac-filling * { cursor: crosshair !important; user-select: none; }
+			`;
+			document.head.appendChild(style);
 		}
 
 		getTarget() {
@@ -247,6 +262,7 @@
 				direction: frappe.utils.is_rtl() ? "rtl" : "ltr",
 				getEditor: this._get_editor.bind(this),
 			});
+			this._setup_sheet_tools($wrapper);
 
 			if (this.on_render) this.on_render();
 		}
@@ -360,39 +376,9 @@
 				},
 				setValue: (val) => {
 					control.set_value(val);
-					const current = (this.state && this.state.rows && this.state.rows[rowIndex]) || rowData;
-					const rowName = current.name;
-					const rowCompany = current.company || current.name;
-					const fieldname = col.docfield.fieldname;
-					const dirtyKey = `${rowName}|${rowCompany}|${fieldname}`;
-
-					const cleanVal = val === "" || val === undefined ? null : val;
-					const origVal =
-						current._orig && current._orig[fieldname] !== undefined
-							? current._orig[fieldname]
-							: (current[fieldname] ?? null);
-
-					if (cleanVal === origVal) {
-						this.dirty.delete(dirtyKey);
-					} else {
-						this.dirty.set(dirtyKey, {
-							name: rowName,
-							company: rowCompany,
-							field: fieldname,
-							old: origVal,
-							new: cleanVal,
-							company_is_group: current.company_is_group != null ? current.company_is_group : (current.is_group || 0),
-							is_group: current.is_group || 0,
-						});
-					}
-
-					current[fieldname] = cleanVal;
-					if (this.datatable && this.datatable.datamanager && this.datatable.datamanager.data) {
-						const dmRow = this.datatable.datamanager.data[rowIndex];
-						if (dmRow) dmRow[fieldname] = cleanVal;
-					}
+					const cleanVal = this._apply_cell_value(rowIndex, col.docfield.fieldname, val, rowData);
 					this._update_save_button();
-					this.datatable.refreshRow(this._row_values(current), rowIndex);
+					this._refresh_rows([rowIndex]);
 					return Promise.resolve(cleanVal);
 				},
 				getValue: () => {
@@ -401,6 +387,281 @@
 					return Promise.resolve(val);
 				},
 			};
+		}
+
+		// Record a cell's new value as a change (or drop it when back to the original); no repaint
+		_apply_cell_value(rowIndex, fieldname, val, fallbackRow) {
+			const current = (this.state && this.state.rows && this.state.rows[rowIndex]) || fallbackRow;
+			const rowName = current.name;
+			const rowCompany = current.company || current.name;
+			const dirtyKey = `${rowName}|${rowCompany}|${fieldname}`;
+
+			const cleanVal = val === "" || val === undefined ? null : val;
+			const origVal =
+				current._orig && current._orig[fieldname] !== undefined
+					? current._orig[fieldname]
+					: (current[fieldname] ?? null);
+
+			if (cleanVal === origVal) {
+				this.dirty.delete(dirtyKey);
+			} else {
+				this.dirty.set(dirtyKey, {
+					name: rowName,
+					company: rowCompany,
+					field: fieldname,
+					old: origVal,
+					new: cleanVal,
+					company_is_group: current.company_is_group != null ? current.company_is_group : (current.is_group || 0),
+					is_group: current.is_group || 0,
+				});
+			}
+
+			current[fieldname] = cleanVal;
+			if (this.datatable && this.datatable.datamanager && this.datatable.datamanager.data) {
+				const dmRow = this.datatable.datamanager.data[rowIndex];
+				if (dmRow) dmRow[fieldname] = cleanVal;
+			}
+			return cleanVal;
+		}
+
+		_refresh_rows(rowIndexes) {
+			const rows = (this.state && this.state.rows) || [];
+			rowIndexes.forEach((i) => rows[i] && this.datatable.refreshRow(this._row_values(rows[i]), i));
+			this._place_fill_handle();
+		}
+
+		// ---- Spreadsheet tools: fill handle, paste, delete ----------------------------------------
+
+		_setup_sheet_tools($wrapper) {
+			const dt = this.datatable;
+			const body = dt.bodyScrollable;
+			const handle = document.createElement("div");
+			handle.className = "bac-fill-handle";
+			handle.title = __("Tarik untuk menyalin ke baris lain · klik ganda untuk mengisi sampai baris terakhir");
+			this._fill_handle = handle;
+
+			const later = () => requestAnimationFrame(() => this._place_fill_handle());
+			body.addEventListener("mouseup", later);
+			body.addEventListener("scroll", later);
+			$wrapper[0].addEventListener("keyup", later);
+
+			handle.addEventListener("mousedown", (e) => {
+				// keep DataTable from treating this as a click on the cell
+				e.preventDefault();
+				e.stopPropagation();
+				this._drag_fill(e);
+			});
+			handle.addEventListener("dblclick", (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				const range = this._sheet_range();
+				const last = ((this.state && this.state.rows) || []).length - 1;
+				if (range && last > range.r2) this._fill(range, this._row_span(range.r2 + 1, last));
+			});
+
+			$wrapper[0].addEventListener("paste", (e) => {
+				if (dt.cellmanager.$editingCell) return;
+				const range = this._sheet_range(true);
+				if (!range) return;
+				e.preventDefault();
+				this._paste((e.clipboardData || window.clipboardData).getData("text"), range);
+			});
+
+			$wrapper[0].addEventListener("keydown", (e) => {
+				if (e.key !== "Delete" && e.key !== "Backspace") return;
+				if (dt.cellmanager.$editingCell || /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+				const range = this._sheet_range();
+				if (!range) return;
+				e.preventDefault();
+				const assignments = [];
+				range.rows.forEach((r) => range.cols.forEach((col) => assignments.push({ rowIndex: r, col, value: null })));
+				this._assign(assignments);
+			});
+		}
+
+		_row_span(from, to) {
+			const out = [];
+			for (let r = from; r <= to; r++) out.push(r);
+			return out;
+		}
+
+		// The selected block (focused cell up to the selection cursor), limited to editable columns
+		_sheet_range(allowReadOnly) {
+			const cm = this.datatable && this.datatable.cellmanager;
+			if (!cm || !cm.$focusedCell || cm.$editingCell) return null;
+			const a = cm.$focusedCell.dataset;
+			const b = (cm.$selectionCursor || cm.$focusedCell).dataset;
+			if (a.rowIndex === undefined || a.isHeader === "true" || a.isFilter === "true") return null;
+			const [r1, r2] = [+a.rowIndex, +b.rowIndex].sort((x, y) => x - y);
+			const [c1, c2] = [+a.colIndex, +b.colIndex].sort((x, y) => x - y);
+			const cols = [];
+			for (let c = c1; c <= c2; c++) {
+				const col = this.datatable.getColumn(c);
+				if (col && col.editable && col.docfield) cols.push(col);
+			}
+			if (!cols.length && !allowReadOnly) return null;
+			return { r1, r2, c1, c2, cols, rows: this._row_span(r1, r2) };
+		}
+
+		_place_fill_handle() {
+			const handle = this._fill_handle;
+			if (!handle) return;
+			const range = this._sheet_range();
+			const $cell = range && this.datatable.cellmanager.getCell$(range.cols[range.cols.length - 1].colIndex, range.r2);
+			if (!$cell) {
+				handle.remove();
+			} else if (handle.parentNode !== $cell) {
+				$cell.appendChild(handle);
+			}
+		}
+
+		_drag_fill(startEvent) {
+			const range = this._sheet_range();
+			if (!range) return;
+			const body = this.datatable.bodyScrollable;
+			const cm = this.datatable.cellmanager;
+			let targets = [];
+			let pointer = { x: startEvent.clientX, y: startEvent.clientY };
+
+			const paint = () => {
+				document.querySelectorAll(".bac-fill-preview").forEach((el) => el.classList.remove("bac-fill-preview"));
+				targets.forEach((r) =>
+					range.cols.forEach((col) => {
+						const $c = cm.getCell$(col.colIndex, r);
+						if ($c) $c.classList.add("bac-fill-preview");
+					})
+				);
+			};
+			const track = () => {
+				const el = document.elementFromPoint(pointer.x, pointer.y);
+				const cell = el && el.closest(".dt-cell");
+				if (!cell || !body.contains(cell) || cell.dataset.rowIndex === undefined) return;
+				const r = +cell.dataset.rowIndex;
+				if (r > range.r2) targets = this._row_span(range.r2 + 1, r);
+				else if (r < range.r1) targets = this._row_span(r, range.r1 - 1).reverse();
+				else targets = [];
+				paint();
+			};
+			// keep scrolling while the pointer rests near an edge, like a spreadsheet
+			const scroller = setInterval(() => {
+				const box = body.getBoundingClientRect();
+				const step = pointer.y > Math.min(box.bottom, window.innerHeight) - 30 ? 20 : pointer.y < Math.max(box.top, 0) + 30 ? -20 : 0;
+				if (!step) return;
+				if (body.scrollHeight > body.clientHeight) body.scrollTop += step;
+				else window.scrollBy(0, step);
+				track();
+			}, 50);
+			const move = (e) => {
+				pointer = { x: e.clientX, y: e.clientY };
+				track();
+			};
+			const up = () => {
+				clearInterval(scroller);
+				document.removeEventListener("mousemove", move);
+				document.removeEventListener("mouseup", up);
+				document.body.classList.remove("bac-filling");
+				targets = targets.slice();
+				document.querySelectorAll(".bac-fill-preview").forEach((el) => el.classList.remove("bac-fill-preview"));
+				if (targets.length) this._fill(range, targets);
+			};
+			document.body.classList.add("bac-filling");
+			document.addEventListener("mousemove", move);
+			document.addEventListener("mouseup", up);
+		}
+
+		// Copy the selected rows onto `targets` (nearest first), repeating them when more rows are filled
+		_fill(range, targets) {
+			const rows = this.state.rows;
+			const downward = targets[0] > range.r2;
+			const src = downward ? range.rows : range.rows.slice().reverse();
+			const assignments = [];
+			targets.forEach((r, i) => {
+				const s = src[i % src.length];
+				range.cols.forEach((col) =>
+					assignments.push({ rowIndex: r, col, value: rows[s][col.docfield.fieldname] ?? null, srcRow: rows[s] })
+				);
+			});
+			this._assign(assignments);
+		}
+
+		_paste(text, range) {
+			const lines = String(text || "").replace(/\r/g, "").split("\n");
+			if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+			const matrix = lines.map((l) => l.split("\t").map((v) => v.trim()));
+			const rows = this.state.rows;
+			const assignments = [];
+			const editable = (c) => {
+				const col = this.datatable.getColumn(c);
+				return col && col.editable && col.docfield ? col : null;
+			};
+			if (matrix.length === 1 && matrix[0].length === 1) {
+				// one value into every selected cell
+				range.rows.forEach((r) =>
+					range.cols.forEach((col) => assignments.push({ rowIndex: r, col, value: matrix[0][0], pasted: true }))
+				);
+			} else {
+				matrix.forEach((vals, i) =>
+					vals.forEach((value, j) => {
+						const col = editable(range.c1 + j);
+						if (col && rows[range.r1 + i]) assignments.push({ rowIndex: range.r1 + i, col, value, pasted: true });
+					})
+				);
+			}
+			this._assign(assignments);
+		}
+
+		// Apply cell values; an Account/Cost Center/Warehouse copied or pasted from another company is mapped
+		// to the same-named one of the target row's company, or skipped when it has none
+		_assign(assignments) {
+			if (!assignments.length) return;
+			const COMPANY_SCOPED = ["Account", "Cost Center", "Warehouse"];
+			const rows = this.state.rows;
+			const companyOf = (r) => r.company || r.name;
+			const toMap = assignments.filter(
+				(a) =>
+					a.value &&
+					COMPANY_SCOPED.includes((a.col.fdef || {}).link) &&
+					(a.pasted || (a.srcRow && companyOf(a.srcRow) !== companyOf(rows[a.rowIndex])))
+			);
+			const mapping = toMap.length
+				? frappe.xcall("account_bulk_config.api.propagation.map_values", {
+						items: toMap.map((a) => ({
+							link: a.col.fdef.link,
+							value: a.value,
+							src_company: a.srcRow ? companyOf(a.srcRow) : null,
+							dst_company: companyOf(rows[a.rowIndex]),
+						})),
+				  })
+				: Promise.resolve([]);
+
+			mapping.then((mapped) => {
+				mapped.forEach((m, i) => {
+					toMap[i].value = m.found ? m.value : undefined;
+				});
+				const touched = new Set();
+				let filled = 0;
+				let skipped = 0;
+				assignments.forEach((a) => {
+					if (a.value === undefined) {
+						skipped++;
+						return;
+					}
+					this._apply_cell_value(a.rowIndex, a.col.docfield.fieldname, a.value);
+					touched.add(a.rowIndex);
+					filled++;
+				});
+				this._update_save_button();
+				this._refresh_rows(Array.from(touched));
+				const cleared = assignments.every((a) => a.value === null);
+				frappe.show_alert({
+					message: skipped
+						? __("{0} sel diisi, {1} dilewati (tidak ada padanannya di company baris tujuan)", [filled, skipped])
+						: cleared
+						? __("{0} sel dikosongkan", [filled])
+						: __("{0} sel diisi", [filled]),
+					indicator: skipped ? "orange" : "green",
+				});
+			});
 		}
 
 		_float_dropdown(control) {

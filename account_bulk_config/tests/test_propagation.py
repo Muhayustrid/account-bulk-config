@@ -1,7 +1,13 @@
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from account_bulk_config.api.propagation import descendants, map_value, preview_copy, preview_propagation
+from account_bulk_config.api.propagation import (
+	descendants,
+	map_value,
+	map_values,
+	preview_copy,
+	preview_propagation,
+)
 from account_bulk_config.tests.factories import (
 	CHILD_A,
 	CHILD_B,
@@ -34,6 +40,29 @@ class TestPropagation(IntegrationTestCase):
 		)
 		self.assertEqual(map_value("Account", "Ghost - BACP", PARENT, CHILD_A), ("Ghost - BACPA", False))
 		self.assertEqual(map_value("Account", acct("Debtors", CHILD_B), PARENT, CHILD_A)[1], False)
+
+	def test_map_values_for_fill_and_paste(self):
+		debtors = acct("Debtors", PARENT)
+		out = map_values(
+			[
+				# filled from a row of another company
+				{"link": "Account", "value": debtors, "src_company": PARENT, "dst_company": CHILD_A},
+				# pasted text: the account's own company is the source
+				{"link": "Account", "value": debtors, "dst_company": CHILD_B},
+				{"link": "Account", "value": "Ghost - BACP", "src_company": PARENT, "dst_company": CHILD_A},
+				# unknown pasted text is kept for save validation to report
+				{"link": "Account", "value": "Not An Account", "dst_company": CHILD_A},
+			]
+		)
+		self.assertEqual(
+			out,
+			[
+				{"value": acct("Debtors", CHILD_A), "found": True},
+				{"value": acct("Debtors", CHILD_B), "found": True},
+				{"value": None, "found": False},
+				{"value": "Not An Account", "found": True},
+			],
+		)
 
 	def test_descendants(self):
 		self.assertEqual(set(descendants(PARENT, "children")), {CHILD_A, CHILD_B})

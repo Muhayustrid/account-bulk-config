@@ -268,3 +268,27 @@ def preview_copy(
 		)
 
 	return {"changes": changes, "rows": preview_propagation(target, changes, depth, targets)}
+
+
+@frappe.whitelist()
+def map_values(items: list[dict] | str) -> list[dict]:
+	"""Map each {link, value, src_company, dst_company} to the destination company's equivalent.
+
+	Used when cells are filled or pasted onto rows of another company: returns
+	[{"value": mapped or None, "found": bool}] in the same order. Without src_company (pasted text)
+	the value's own company is the source.
+	"""
+	if isinstance(items, str):
+		items = json.loads(items)
+	out = []
+	for it in items:
+		src_company = it.get("src_company")
+		if not src_company:
+			# pasted text: the value's own company is the source; unknown values are left to save validation
+			src_company = frappe.db.get_value(it.get("link"), it.get("value"), "company")
+			if not src_company:
+				out.append({"value": it.get("value"), "found": True})
+				continue
+		mapped, found = map_value(it.get("link"), it.get("value"), src_company, it.get("dst_company"))
+		out.append({"value": mapped if found else None, "found": found})
+	return out
