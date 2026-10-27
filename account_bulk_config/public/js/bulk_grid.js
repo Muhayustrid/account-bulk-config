@@ -76,6 +76,7 @@
 			this.page.add_menu_item(__("Export Excel"), () => this.export_excel(false));
 			this.page.add_menu_item(__("Download Template"), () => this.export_excel(true));
 			this.page.add_menu_item(__("Import Excel"), () => this.import_dialog());
+			this.page.add_menu_item(__("Update Jurnal Lama…"), () => this.ledger_update_dialog());
 			// POS Profile and Warehouse rows have no per-company child rows to copy or propagate
 			if (this.getTarget() === "pos_profile" || this.getTarget() === "warehouse") return;
 			this.page.add_menu_item(__("Copy antar Company…"), () => this.copy_from_outlet_dialog());
@@ -802,7 +803,7 @@
 				if (done >= docs.length) {
 					this._saving = false;
 					hideProgress();
-					this._handle_save_results(results);
+					this._handle_save_results(results, byDoc);
 					return;
 				}
 				const batch = nextBatch(done);
@@ -821,13 +822,13 @@
 						// remaining documents stay dirty so the user can retry
 						this._saving = false;
 						hideProgress();
-						if (results.length) this._handle_save_results(results);
+						if (results.length) this._handle_save_results(results, byDoc);
 					});
 			};
 			next();
 		}
 
-		_handle_save_results(results) {
+		_handle_save_results(results, byDoc) {
 			const okCount = results.filter((r) => r.status === "ok").length;
 			const skippedCount = results.filter((r) => r.status === "skipped").length;
 			const errors = results.filter((r) => r.status !== "ok");
@@ -862,13 +863,290 @@
 				);
 			}
 
-			frappe.msgprint({
+			const msg = frappe.msgprint({
 				title: __("Hasil Simpan"),
 				indicator: errors.length ? "orange" : "green",
 				message: html.join(""),
 			});
 
 			this.refresh();
+			this._offer_ledger_update(results, byDoc, msg);
+		}
+
+		// Saved changes that replaced an account already used by submitted documents
+		_offer_ledger_update(results, byDoc, msgDialog) {
+			if (!byDoc) return;
+			const okPairs = new Set(results.filter((r) => r.status === "ok").map((r) => `${r.name}|${r.company}`));
+			const target = this.getTarget();
+			this._load_ledger_fields().then((supported) => {
+				const candidates = Array.from(byDoc.values())
+					.flat()
+					.filter((c) => okPairs.has(`${c.name}|${c.company}`) && supported.includes(c.field) && c.old && c.new && c.old !== c.new)
+					.map((c) => ({ name: c.name, company: c.company, field: c.field, old: c.old, new: c.new }));
+				if (!candidates.length || this.getTarget() !== target) return;
+				frappe.xcall("account_bulk_config.api.ledger_update.preview", { target, changes: candidates }).then((preview) => {
+					const affected = (preview || []).filter((p) => p.count > 0);
+					if (!affected.length) return;
+					const ask = () =>
+						frappe.confirm(
+							__("{0} dokumen yang sudah submit masih memakai nilai lama. Update juga jurnalnya ke nilai baru?", [
+								affected.reduce((n, p) => n + p.count, 0),
+							]),
+							() => this.ledger_update_dialog(affected.map((p) => ({ name: p.name, company: p.company, field: p.field, old: p.old, new: p.new })))
+						);
+					// let the save result be read first
+					if (msgDialog && msgDialog.display) msgDialog.custom_onhide = ask;
+					else ask();
+				}).catch(() => {
+					// no permission to repost: the feature is simply not offered
+				});
+			});
+		}
+
+		_load_ledger_fields() {
+			const target = this.getTarget();
+			this._ledger_fields = this._ledger_fields || {};
+			if (this._ledger_fields[target]) return Promise.resolve(this._ledger_fields[target]);
+			return frappe
+				.xcall("account_bulk_config.api.ledger_update.get_supported_fields", { target })
+				.then((fields) => (this._ledger_fields[target] = fields || []));
+		}
+
+		ledger_update_dialog(prefilled) {
+			const target = this.getTarget();
+			const NAME_DOCTYPE = {
+				company: "Company",
+				item: "Item",
+				item_group: "Item Group",
+				mode_of_payment: "Mode of Payment",
+				pos_profile: "POS Profile",
+				warehouse: "Warehouse",
+			};
+			const esc = (v) => frappe.utils.escape_html(v == null ? "" : String(v));
+			Promise.all([this.load_field_meta(), this._load_ledger_fields()]).then(([meta, supported]) => {
+				const fieldDefs = meta.filter((f) => supported.includes(f.fieldname));
+				if (!fieldDefs.length) {
+					frappe.msgprint(__("Belum ada kolom di halaman ini yang bisa diterapkan ke jurnal lama."));
+					return;
+				}
+				const labelOf = (fieldname) => {
+					const f = fieldDefs.find((x) => x.fieldname === fieldname);
+					return f ? __(f.label) : fieldname;
+				};
+				const linkOf = () => {
+					const f = fieldDefs.find((x) => x.fieldname === d.get_value("field"));
+					return (f && f.link) || "Account";
+				};
+				const companyOf = () => (target === "company" ? d.get_value("source") : d.get_value("company"));
+				const manualFields = prefilled
+					? []
+					: [
+							{
+								fieldname: "source",
+								label: __(NAME_DOCTYPE[target]),
+								fieldtype: "Link",
+								options: NAME_DOCTYPE[target],
+								reqd: 1,
+								change: () => {
+									// POS Profile and Warehouse belong to one company
+									const src = d.get_value("source");
+									if (src && (target === "pos_profile" || target === "warehouse")) {
+										frappe.db.get_value(NAME_DOCTYPE[target], src, "company").then((r) => {
+											d.set_value("company", (r.message && r.message.company) || null);
+										});
+									}
+									fillCurrent();
+									resetPreview();
+								},
+							},
+							{
+								fieldname: "company",
+								label: __("Company"),
+								fieldtype: "Link",
+								options: "Company",
+								hidden: target === "company" ? 1 : 0,
+								reqd: target === "company" ? 0 : 1,
+								read_only: target === "pos_profile" || target === "warehouse" ? 1 : 0,
+								change: () => {
+									fillCurrent();
+									resetPreview();
+								},
+							},
+							{ fieldtype: "Column Break" },
+							{
+								fieldname: "field",
+								label: __("Kolom"),
+								fieldtype: "Select",
+								options: fieldDefs.map((f) => ({ label: __(f.label), value: f.fieldname })),
+								default: fieldDefs[0].fieldname,
+								reqd: 1,
+								change: () => {
+									d.set_df_property("old", "options", linkOf());
+									d.set_df_property("new", "options", linkOf());
+									d.set_value("old", null);
+									fillCurrent();
+									resetPreview();
+								},
+							},
+							{
+								fieldname: "old",
+								label: __("Nilai lama (yang ada di dokumen)"),
+								fieldtype: "Link",
+								options: fieldDefs[0].link,
+								reqd: 1,
+								get_query: () => ({ filters: { company: companyOf() } }),
+								change: () => resetPreview(),
+							},
+							{
+								fieldname: "new",
+								label: __("Nilai baru"),
+								fieldtype: "Link",
+								options: fieldDefs[0].link,
+								reqd: 1,
+								description: __("Diisi otomatis dari setting saat ini"),
+								get_query: () => ({ filters: { company: companyOf(), is_group: 0 } }),
+								change: () => resetPreview(),
+							},
+							{ fieldtype: "Section Break" },
+					  ];
+
+				let d = null;
+				let previewed = null;
+				const resetPreview = () => {
+					if (!d || !previewed) return;
+					previewed = null;
+					d.set_primary_action(__("Preview"), () => doPreview());
+				};
+
+				d = new frappe.ui.Dialog({
+					title: __("Update Jurnal Lama"),
+					size: "extra-large",
+					fields: [
+						{
+							fieldname: "intro",
+							fieldtype: "HTML",
+							options: `<p class="text-muted">${__(
+								"Dokumen submit (Sales/Purchase Invoice, Payment Entry, Journal Entry, dll.) yang masih memakai nilai lama akan diganti ke nilai baru, lalu GL-nya dibentuk ulang lewat Repost Accounting Ledger / Repost Item Valuation. Dokumen di periode yang sudah ditutup dilewati."
+							)}</p>`,
+						},
+						{ fieldtype: "Section Break" },
+						...manualFields,
+						{ fieldname: "from_date", label: __("Dari tanggal"), fieldtype: "Date", change: () => resetPreview() },
+						{ fieldtype: "Column Break" },
+						{ fieldname: "to_date", label: __("Sampai tanggal"), fieldtype: "Date", change: () => resetPreview() },
+						{ fieldtype: "Section Break" },
+						{ fieldname: "preview_html", fieldtype: "HTML" },
+					],
+					primary_action_label: __("Preview"),
+					primary_action: () => (previewed ? run() : doPreview()),
+				});
+
+				// "new" defaults to what the setting holds now
+				const fillCurrent = () => {
+					if (prefilled) return;
+					const src = d.get_value("source");
+					const comp = companyOf();
+					const field = d.get_value("field");
+					if (!src || !comp || !field) return;
+					frappe
+						.xcall("account_bulk_config.api.ledger_update.get_current_value", { target, name: src, company: comp, field }, "GET")
+						.then((value) => {
+							if (value) d.set_value("new", value);
+						});
+				};
+
+				const changes = () => {
+					if (prefilled) return prefilled;
+					const v = d.get_values();
+					if (!v) return null;
+					const company = target === "company" ? v.source : v.company;
+					return [{ name: v.source, company, field: v.field, old: v.old, new: v.new }];
+				};
+
+				const dates = () => ({ from_date: d.get_value("from_date") || null, to_date: d.get_value("to_date") || null });
+
+				const renderPreview = (rows) => {
+					const total = rows.reduce((n, r) => n + (r.count || 0), 0);
+					const html = [`<p><b>${__("Akan diupdate")}: ${total}</b> ${__("dokumen")}</p>`];
+					rows.forEach((r) => {
+						html.push(`<div class="mb-3"><div><b>${esc(r.name)}</b> · ${esc(r.company)} · ${esc(labelOf(r.field))}: <span class="text-danger">${esc(r.old)}</span> → <span class="text-success">${esc(r.new)}</span></div>`);
+						if (r.error) {
+							html.push(`<div class="text-danger">${esc(r.error)}</div></div>`);
+							return;
+						}
+						html.push(`<div>${__("Diupdate")}: <b>${r.count}</b> · ${__("Dilewati")}: <b>${r.skipped.length}</b></div>`);
+						if (r.vouchers.length) {
+							const more = r.count > r.vouchers.length ? `<li class="text-muted">${__("dan {0} lainnya", [r.count - r.vouchers.length])}</li>` : "";
+							html.push(`<ul class="bac-import-errors">${r.vouchers.map((v) => `<li>${esc(v.posting_date)} · ${esc(__(v.voucher_type))} <a href="/app/${frappe.router.slug(v.voucher_type)}/${encodeURIComponent(v.voucher_no)}" target="_blank">${esc(v.voucher_no)}</a></li>`).join("")}${more}</ul>`);
+						}
+						if (r.skipped.length) {
+							html.push(`<div class="text-muted">${__("Dilewati")}:</div><ul class="bac-import-errors">${r.skipped.slice(0, 50).map((v) => `<li>${esc(v.posting_date)} · ${esc(__(v.voucher_type))} ${esc(v.voucher_no)}: ${esc(v.reason)}</li>`).join("")}${r.skipped.length > 50 ? `<li class="text-muted">${__("dan {0} lainnya", [r.skipped.length - 50])}</li>` : ""}</ul>`);
+						}
+						html.push("</div>");
+					});
+					d.fields_dict.preview_html.$wrapper.html(html.join(""));
+					return total;
+				};
+
+				const doPreview = () => {
+					const c = changes();
+					if (!c) return;
+					frappe
+						.xcall("account_bulk_config.api.ledger_update.preview", { target, changes: c, ...dates() }, "GET", { freeze: true })
+						.then((rows) => {
+							const total = renderPreview(rows || []);
+							if (total > 0) {
+								previewed = c;
+								d.set_primary_action(__("Terapkan ke {0} dokumen", [total]), () => run());
+							}
+						});
+				};
+
+				const showResults = (results) => {
+					const html = results.map((r) => {
+						const reposts = (r.reposts || [])
+							.map((x) => `<a href="/app/${frappe.router.slug(x.doctype)}/${encodeURIComponent(x.name)}" target="_blank">${esc(x.name)}</a>`)
+							.join(", ");
+						const failed = (r.failed || []).length
+							? `<ul class="bac-import-errors">${r.failed.map((v) => `<li>${esc(__(v.voucher_type))} ${esc(v.voucher_no)}: ${esc(v.reason)}</li>`).join("")}</ul>`
+							: "";
+						const err = r.message ? `<div class="text-danger">${esc(r.message)}</div>` : "";
+						return `<div class="mb-3"><b>${esc(r.name)}</b> · ${esc(r.company)} · ${esc(labelOf(r.field))}<div>${__("Diupdate")}: <b>${r.updated || 0}</b> · ${__("Dilewati")}: <b>${(r.skipped || []).length}</b> · ${__("Gagal")}: <b>${(r.failed || []).length}</b></div>${reposts ? `<div>${__("Dokumen repost")}: ${reposts}</div>` : ""}${failed}${err}</div>`;
+					});
+					frappe.msgprint({
+						title: __("Hasil Update Jurnal"),
+						indicator: results.some((r) => r.status !== "ok" || (r.failed || []).length) ? "orange" : "green",
+						message: `${html.join("")}<p class="text-muted">${__("Repost berjalan di background; pantau statusnya di dokumen repost di atas.")}</p>`,
+					});
+				};
+
+				const run = () => {
+					const c = previewed;
+					if (!c) return;
+					frappe.confirm(__("Ganti akun di dokumen yang sudah submit dan bentuk ulang jurnalnya? Tindakan ini mengubah buku besar."), () => {
+						frappe
+							.xcall("account_bulk_config.api.ledger_update.apply", { target, changes: c, ...dates() }, "POST", { freeze: true, freeze_message: __("Mengupdate dokumen…") })
+							.then((out) => {
+								d.hide();
+								if (out && out.results) {
+									showResults(out.results);
+									return;
+								}
+								const jobId = out && out.job_id;
+								frappe.show_alert({ message: __("{0} dokumen diproses di background", [out.total]), indicator: "blue" });
+								const handler = (data) => {
+									if (!data || data.job_id !== jobId) return;
+									frappe.realtime.off("bulk_account_config_ledger_done", handler);
+									showResults(data.results || []);
+								};
+								frappe.realtime.on("bulk_account_config_ledger_done", handler);
+							});
+					});
+				};
+
+				if (prefilled) doPreview();
+				d.show();
+			});
 		}
 
 		export_excel(is_template) {
