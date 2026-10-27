@@ -22,3 +22,14 @@ doctype_js = {
 	dt: "public/js/voucher_account_fix.js"
 	for dt in ("Sales Invoice", "Purchase Invoice", "Payment Entry", "Journal Entry", "Purchase Receipt")
 }
+
+app_include_js = "coa_sync.bundle.js"
+
+doctype_tree_js = {"Account": "public/js/account_tree.js"}
+
+doc_events = {
+	"Account": {
+		"before_validate": "account_bulk_config.api.coa_sync.before_validate",
+		"on_update": "account_bulk_config.api.coa_sync.on_update",
+	}
+}

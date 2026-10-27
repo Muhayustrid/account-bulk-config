@@ -31,3 +31,19 @@ dan penggantinya, cek preview field yang akan berubah, lalu **Terapkan & Repost*
   akun pembayaran POS).
 - Akun piutang/utang hanya bisa diganti dengan akun bertipe sama, dan mata uang akun harus sama.
 - Aturan periode tertutup, deferred dan izin sama dengan **Update Jurnal Lama**.
+
+## Salin COA ke Anak Perusahaan
+
+ERPNext menyalin akun baru dari company induk teratas ke **setiap** anak perusahaan dalam satu
+request simpan, dan menolak simpan kalau induk akun itu belum ada di salah satu anak. Kalau anak
+perusahaannya banyak, request ini bisa melewati batas waktu web (*Request Timed Out*). App ini mengubahnya:
+
+- Akun yang disimpan di company induk langsung tersimpan. Salinan ke anak perusahaan dibuat oleh
+  background job (worker harus jalan), termasuk induk akunnya kalau belum ada. Hasilnya muncul
+  sebagai notifikasi; akun yang tidak bisa disalin ditampilkan alasannya.
+- Menu **Salin COA ke Anak Perusahaan…** (Chart of Accounts > ⋯, atau Bulk Company Accounts > ⋯)
+  membandingkan COA induk dengan anak perusahaan yang dipilih, menampilkan akun yang akan dibuat/
+  diupdate, lalu menyalinnya. Akun dicocokkan berdasarkan nama (dan nomor akun bila ada); akun yang
+  sudah ada disamakan Account Type, Freeze dan Balance Must Be-nya (opsional); akun yang hanya ada
+  di anak tidak disentuh; akun yang di anak berupa ledger sedangkan di induk berupa grup dilewati.
+- Penyalinan lebih dari 30 akun berjalan di background.

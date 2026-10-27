@@ -138,5 +138,8 @@ class BulkCompanyAccountsPage {
 				search: this.search_field ? (this.search_field.get_value() || "").trim() : null,
 			}),
 		});
+		this.page.add_menu_item(__("Salin COA ke Anak Perusahaan…"), () =>
+			account_bulk_config.coa_sync_dialog(this.parent_company_field.get_value())
+		);
 	}
 }
