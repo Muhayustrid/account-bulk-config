@@ -16,3 +16,9 @@ add_to_apps_screen = [
 		"has_permission": "account_bulk_config.api.permission.has_app_permission",
 	}
 ]
+
+# "Koreksi Akun" on submitted vouchers that Repost Accounting Ledger can repost
+doctype_js = {
+	dt: "public/js/voucher_account_fix.js"
+	for dt in ("Sales Invoice", "Purchase Invoice", "Payment Entry", "Journal Entry", "Purchase Receipt")
+}

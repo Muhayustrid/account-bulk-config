@@ -18,3 +18,16 @@ nilai lama di dokumen yang sudah submit lalu membentuk ulang GL-nya:
   dilewati dan ditampilkan alasannya.
 - Butuh izin membuat Repost Accounting Ledger (default: System Manager), atau Repost Item Valuation
   untuk warehouse.
+
+## Koreksi Akun per Dokumen
+
+Kalau satu dokumen yang sudah submit ternyata salah akun atau cost center, buka dokumennya
+(Sales/Purchase Invoice, Payment Entry, Journal Entry, Purchase Receipt), lalu pilih
+**Actions > Koreksi Akun**. Pilih nilai yang keliru (daftar diambil dari akun yang dipakai dokumen itu)
+dan penggantinya, cek preview field yang akan berubah, lalu **Terapkan & Repost**.
+
+- Semua field Account / Cost Center yang berisi nilai lama diganti, termasuk yang tidak bisa diedit
+  lewat *Update After Submit* ERPNext (akun piutang/utang, paid from/to, akun Journal Entry,
+  akun pembayaran POS).
+- Akun piutang/utang hanya bisa diganti dengan akun bertipe sama, dan mata uang akun harus sama.
+- Aturan periode tertutup, deferred dan izin sama dengan **Update Jurnal Lama**.
