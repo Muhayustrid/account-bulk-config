@@ -8,6 +8,15 @@
 		root.BulkGrid = factory();
 	}
 })(typeof window !== "undefined" ? window : globalThis, function () {
+	// DataTable.destroy() only empties its wrapper: the HyperList inside keeps a requestAnimationFrame loop
+	// reading scrollTop every frame, forever. Each re-render left one more running, slowing the page down.
+	function destroyDataTable(dt) {
+		if (!dt) return;
+		const hyperlist = dt.bodyRenderer && dt.bodyRenderer.hyperlist;
+		if (hyperlist) hyperlist.destroy();
+		dt.destroy();
+	}
+
 	class BulkGrid {
 		constructor(opts) {
 			this.page = opts.page;
@@ -29,6 +38,11 @@
 			this._setup_actions();
 			this._setup_beforeunload();
 			BulkGrid._inject_styles();
+			// Desk keeps a page's DOM after leaving it; stop the table's scroll loop until on_page_show re-renders
+			this.page.wrapper.on("hide", () => {
+				const hyperlist = this.datatable && this.datatable.bodyRenderer && this.datatable.bodyRenderer.hyperlist;
+				if (hyperlist) hyperlist.destroy();
+			});
 
 			this.$root = $('<div class="bac-page">').appendTo(this.page.main);
 			this.$root.html(`<p class="text-muted">${__("Loading...")}</p>`);
@@ -190,7 +204,7 @@
 
 		_render_error(r) {
 			if (this.datatable) {
-				this.datatable.destroy();
+				destroyDataTable(this.datatable);
 				this.datatable = null;
 			}
 			let msg = __("Gagal memuat data");
@@ -223,7 +237,7 @@
 
 			if (!rows.length) {
 				if (this.datatable) {
-					this.datatable.destroy();
+					destroyDataTable(this.datatable);
 					this.datatable = null;
 				}
 				this.$root.html(
@@ -233,7 +247,7 @@
 			}
 
 			if (this.datatable) {
-				this.datatable.destroy();
+				destroyDataTable(this.datatable);
 				this.datatable = null;
 			}
 
@@ -941,6 +955,10 @@
 				updateActionButtons();
 			}
 			dialog.$wrapper.one("shown.bs.modal", renderPage);
+			dialog.$wrapper.one("hidden.bs.modal", () => {
+				destroyDataTable(dt);
+				dt = null;
+			});
 			$pager.find("[data-prop-prev]").on("click", () => {
 				pageStart = Math.max(0, pageStart - PAGE);
 				renderPage();
