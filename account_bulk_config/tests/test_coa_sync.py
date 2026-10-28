@@ -3,7 +3,7 @@
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from account_bulk_config.api.coa_sync import apply, preview
+from account_bulk_config.api.coa_sync import apply, preview, run_job
 from account_bulk_config.tests.factories import (
 	CHILD_A,
 	CHILD_A_ABBR,
@@ -92,8 +92,7 @@ class TestCoaSync(IntegrationTestCase):
 
 		[plan] = preview(PARENT, [CHILD_B])
 		self.assertEqual(
-			[u for u in plan["update"] if u["account"] == child],
-			[{"account": child, "label": ledger.account_name, "values": {"account_type": "Cash"}}],
+			[u["values"] for u in plan["update"] if u["account"] == child], [{"account_type": "Cash"}]
 		)
 		self.assertNotIn(
 			child, [u["account"] for u in preview(PARENT, [CHILD_B], update_existing=0)[0]["update"]]
@@ -150,3 +149,79 @@ class TestCoaSync(IntegrationTestCase):
 	def test_a_company_that_has_a_parent_can_be_the_source(self):
 		# CHILD_A has a parent but no children of its own
 		self.assertEqual(preview(CHILD_A), [])
+
+	def test_moved_account_follows_the_parent(self):
+		old = self._parent_account("BAC Sync Lama", self.cash, is_group=1)
+		new = self._parent_account("BAC Sync Pindah", self.cash, is_group=1)
+		ledger = self._parent_account("BAC Sync Geser", old.name)
+		apply(PARENT, [CHILD_A])
+
+		ledger.parent_account = new.name
+		ledger.flags.ignore_root_company_validation = True
+		ledger.save()
+
+		[plan] = preview(PARENT, [CHILD_A])
+		child = f"{ledger.account_name} - {CHILD_A_ABBR}"
+		self.assertIn(child, [u["account"] for u in plan["update"]])
+		apply(PARENT, [CHILD_A])
+		self.assertEqual(_parent_of(CHILD_A, ledger.account_name), f"{new.account_name} - {CHILD_A_ABBR}")
+
+	def test_a_refused_account_does_not_block_the_others(self):
+		frozen = self._parent_account("BAC Sync Beku", self.cash, freeze_account="Yes")
+		apply(PARENT, [CHILD_B])
+		child = f"{frozen.account_name} - {CHILD_B_ABBR}"
+		frappe.db.set_value("Account", child, "freeze_account", "No")
+		frappe.db.set_value("Company", CHILD_B, "role_allowed_for_frozen_entries", None)
+		ledger = self._parent_account("BAC Sync Lolos", self.cash)
+
+		[result] = apply(PARENT, [CHILD_B])["results"]
+		# ERPNext refuses the freeze without the frozen-entries role; the new account still goes in
+		self.assertEqual(len(_own(result["issues"], self.tag)), 1)
+		self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_B_ABBR}"))
+
+	def test_used_account_number_is_reported_not_created(self):
+		number = frappe.generate_hash(length=8)
+		self._parent_account("BAC Sync Nomor", self.cash, account_number=number)
+		doc = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": f"BAC Sync Milik Anak {self.tag}",
+				"account_number": number,
+				"company": CHILD_A,
+				"parent_account": f"Cash In Hand - {CHILD_A_ABBR}",
+			}
+		)
+		doc.flags.ignore_root_company_validation = True
+		doc.insert()
+
+		[plan] = preview(PARENT, [CHILD_A])
+		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
+		self.assertEqual(len(_own(plan["issues"], self.tag)), 1)
+
+	def test_renumbered_parent_account_renumbers_the_copy(self):
+		ledger = self._parent_account("BAC Sync Renomor", self.cash)
+		apply(PARENT, [CHILD_A])
+		number = frappe.generate_hash(length=8)
+		frappe.db.set_value("Account", ledger.name, "account_number", number)
+
+		[plan] = preview(PARENT, [CHILD_A])
+		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
+		[row] = [u for u in plan["update"] if self.tag in u["account"]]
+		self.assertEqual(row["account_number"], number)
+
+		run_job(PARENT, [CHILD_A])
+		self.assertTrue(frappe.db.exists("Account", f"{number} - {ledger.account_name} - {CHILD_A_ABBR}"))
+
+	def test_accounts_gone_from_the_parent_are_deleted_only_on_request(self):
+		ledger = self._parent_account("BAC Sync Hapus", self.cash)
+		apply(PARENT, [CHILD_A])
+		child = f"{ledger.account_name} - {CHILD_A_ABBR}"
+		frappe.delete_doc("Account", ledger.name)
+
+		[plan] = preview(PARENT, [CHILD_A])
+		self.assertEqual(plan["delete"], [])
+		[plan] = preview(PARENT, [CHILD_A], delete_missing=1)
+		self.assertIn(child, [r["account"] for r in plan["delete"]])
+
+		apply(PARENT, [CHILD_A], delete_missing=1)
+		self.assertFalse(frappe.db.exists("Account", child))
