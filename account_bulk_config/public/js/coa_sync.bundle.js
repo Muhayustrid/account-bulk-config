@@ -241,7 +241,5 @@ $(document).on("app_ready", () => {
 				indicator: "green",
 			});
 		}
-		if (window.cur_tree && frappe.get_route()[1] === "Account")
-			cur_tree.reload_node(cur_tree.get_selected_node());
 	});
 });

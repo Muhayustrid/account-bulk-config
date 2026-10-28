@@ -111,6 +111,8 @@ def _plan_company(
 	# source account name -> its copy in the child: an existing account or one created below
 	mapped = {}
 	create, update, issues = [], [], []
+	# child accounts holding a number the parent uses elsewhere: reported, so never deleted
+	conflicts = set()
 	for src in source:
 		parent = mapped.get(src.parent_account) if src.parent_account else None
 		if src.parent_account and not parent:
@@ -127,6 +129,7 @@ def _plan_company(
 		existing = matches.get(src.name)
 		if not existing:
 			if _number(src) and _number(src) in numbers:
+				conflicts.add(numbers[_number(src)])
 				issues.append(
 					_("{0}: nomor akun {1} di {2} sudah dipakai {3}").format(
 						_label(src), _number(src), company, numbers[_number(src)]
@@ -176,6 +179,7 @@ def _plan_company(
 				row["changes"].append(f"{f}: {existing[f] or '-'} → {src[f] or '-'}")
 		if _number(src) and _number(src) != _number(existing):
 			if numbers.get(_number(src), existing.name) != existing.name:
+				conflicts.add(numbers[_number(src)])
 				issues.append(
 					_("{0}: nomor akun {1} di {2} sudah dipakai {3}").format(
 						_label(src), _number(src), company, numbers[_number(src)]
@@ -191,20 +195,17 @@ def _plan_company(
 		if row["changes"]:
 			update.append(row)
 
-	delete = _deletable(accounts, matches) if delete_missing else []
+	delete = _deletable(accounts, matches, conflicts) if delete_missing else []
 	return {"company": company, "create": create, "update": update, "delete": delete, "issues": issues}
 
 
-def _deletable(accounts: list[dict], matches: dict) -> list[dict]:
+def _deletable(accounts: list[dict], matches: dict, conflicts: set) -> list[dict]:
 	"""Child accounts with no counterpart in the parent, deepest first; groups only when emptied."""
-	kept = {a.name for a in matches.values()}
-	missing = [a for a in accounts if a.parent_account and a.name not in kept]
-	# a group that still holds a matched account stays
-	missing = [
-		a
-		for a in missing
-		if not a.is_group or not any(a.lft < k.lft and k.rgt < a.rgt for k in matches.values())
-	]
+	kept_names = conflicts | {a.name for a in matches.values()}
+	kept = [a for a in accounts if a.name in kept_names]
+	missing = [a for a in accounts if a.parent_account and a.name not in kept_names]
+	# a group that still holds a kept account stays
+	missing = [a for a in missing if not a.is_group or not any(a.lft < k.lft and k.rgt < a.rgt for k in kept)]
 	return [{"account": a.name, "label": a.name} for a in sorted(missing, key=lambda a: -a.lft)]
 
 
