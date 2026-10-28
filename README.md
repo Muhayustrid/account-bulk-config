@@ -41,9 +41,21 @@ perusahaannya banyak, request ini bisa melewati batas waktu web (*Request Timed 
 - Akun yang disimpan di company induk langsung tersimpan. Salinan ke anak perusahaan dibuat oleh
   background job (worker harus jalan), termasuk induk akunnya kalau belum ada. Hasilnya muncul
   sebagai notifikasi; akun yang tidak bisa disalin ditampilkan alasannya.
+- **Update Account Number / Name** pada akun company induk hanya mengganti akun induk di request itu;
+  akun yang sama di semua anak perusahaan diganti nama/nomornya oleh background job (worker queue
+  *long* harus jalan), lalu hasilnya muncul sebagai notifikasi. Sebelumnya ERPNext mengganti semuanya
+  dalam satu request dan pasti *Request Timed Out* kalau anak perusahaannya banyak.
 - Menu **Salin COA ke Anak Perusahaan…** (Chart of Accounts > ⋯, atau Bulk Company Accounts > ⋯)
   membandingkan COA induk dengan anak perusahaan yang dipilih, menampilkan akun yang akan dibuat/
-  diupdate, lalu menyalinnya. Akun dicocokkan berdasarkan nama (dan nomor akun bila ada); akun yang
-  sudah ada disamakan Account Type, Freeze dan Balance Must Be-nya (opsional); akun yang hanya ada
-  di anak tidak disentuh; akun yang di anak berupa ledger sedangkan di induk berupa grup dilewati.
-- Penyalinan lebih dari 30 akun berjalan di background.
+  diupdate/dihapus, lalu menyalinnya. Akun dicocokkan berdasarkan nama dan nomor akun, lalu nama
+  saja; akun yang di anak berupa ledger sedangkan di induk berupa grup dilewati.
+- Akun yang sudah ada (opsional, default aktif) disamakan Account Type, Freeze, Balance Must Be,
+  **induk akunnya** (akun yang dipindah di induk ikut dipindah) dan **nomor akunnya** (akun yang
+  diberi/diganti nomor di induk ikut diganti).
+- Akun yang hanya ada di anak tidak disentuh, kecuali opsi **Hapus akun di anak yang tidak ada di
+  induk** dicentang (untuk akun yang dihapus di induk). Akun yang sudah punya transaksi atau masih
+  dipakai sebagai akun default tidak terhapus dan ditampilkan alasannya.
+- Tiap akun disimpan sendiri-sendiri: akun yang ditolak ERPNext (misal izin Freeze, saldo tidak
+  sesuai Balance Must Be, nomor akun sudah dipakai) dilaporkan, akun lain tetap tersalin.
+- Penyalinan lebih dari 30 akun, atau yang mengganti nomor akun, berjalan di background (worker
+  queue *long* harus jalan); hasil atau errornya muncul sebagai pesan.
