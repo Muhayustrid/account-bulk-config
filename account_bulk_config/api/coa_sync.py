@@ -121,8 +121,6 @@ def _plan_company(source: list[dict], company: str, update_existing: bool) -> di
 
 
 def _plan(parent_company, companies=None, accounts=None, update_existing=True) -> list[dict]:
-	if get_ancestors_of("Company", parent_company):
-		frappe.throw(_("{0} bukan company induk teratas").format(parent_company))
 	source = _accounts(parent_company)
 	if accounts:
 		source = _with_ancestors(source, accounts)

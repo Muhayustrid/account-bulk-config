@@ -138,6 +138,6 @@ class TestCoaSync(IntegrationTestCase):
 			frappe.db.get_value("Account", f"{ledger.account_name} - {CHILD_A_ABBR}", "account_type"), "Bank"
 		)
 
-	def test_only_the_top_company_is_a_source(self):
-		with self.assertRaises(frappe.ValidationError):
-			preview(CHILD_A)
+	def test_a_company_that_has_a_parent_can_be_the_source(self):
+		# CHILD_A has a parent but no children of its own
+		self.assertEqual(preview(CHILD_A), [])

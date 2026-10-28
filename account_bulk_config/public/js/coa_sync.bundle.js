@@ -75,7 +75,7 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 				fieldtype: "Link",
 				options: "Company",
 				reqd: 1,
-				get_query: () => ({ filters: { is_group: 1, parent_company: ["is", "not set"] } }),
+				get_query: () => ({ filters: { is_group: 1 } }),
 				change: () => load_children(),
 			},
 			{
