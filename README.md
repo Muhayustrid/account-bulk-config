@@ -41,6 +41,10 @@ perusahaannya banyak, request ini bisa melewati batas waktu web (*Request Timed 
 - Akun yang disimpan di company induk langsung tersimpan. Salinan ke anak perusahaan dibuat oleh
   background job (worker harus jalan), termasuk induk akunnya kalau belum ada. Hasilnya muncul
   sebagai notifikasi; akun yang tidak bisa disalin ditampilkan alasannya.
+- **Update Account Number / Name** pada akun company induk hanya mengganti akun induk di request itu;
+  akun yang sama di semua anak perusahaan diganti nama/nomornya oleh background job (worker queue
+  *long* harus jalan), lalu hasilnya muncul sebagai notifikasi. Sebelumnya ERPNext mengganti semuanya
+  dalam satu request dan pasti *Request Timed Out* kalau anak perusahaannya banyak.
 - Menu **Salin COA ke Anak Perusahaan…** (Chart of Accounts > ⋯, atau Bulk Company Accounts > ⋯)
   membandingkan COA induk dengan anak perusahaan yang dipilih, menampilkan akun yang akan dibuat/
   diupdate/dihapus, lalu menyalinnya. Akun dicocokkan berdasarkan nama dan nomor akun, lalu nama

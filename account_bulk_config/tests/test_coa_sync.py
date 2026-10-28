@@ -3,7 +3,7 @@
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from account_bulk_config.api.coa_sync import apply, preview, run_job
+from account_bulk_config.api.coa_sync import apply, preview, run_job, update_account_number
 from account_bulk_config.tests.factories import (
 	CHILD_A,
 	CHILD_A_ABBR,
@@ -225,3 +225,21 @@ class TestCoaSync(IntegrationTestCase):
 
 		apply(PARENT, [CHILD_A], delete_missing=1)
 		self.assertFalse(frappe.db.exists("Account", child))
+
+	def test_renaming_in_parent_renames_the_copies(self):
+		self.assertEqual(
+			frappe.get_hooks("override_whitelisted_methods")[
+				"erpnext.accounts.doctype.account.account.update_account_number"
+			][-1],
+			"account_bulk_config.api.coa_sync.update_account_number",
+		)
+		ledger = self._parent_account("BAC Sync Nama", self.cash)
+		apply(PARENT, [CHILD_A, CHILD_B])
+		name = f"BAC Sync Nama Baru {self.tag}"
+		number = frappe.generate_hash(length=8)
+
+		new = update_account_number(ledger.name, name, number)
+		self.assertEqual(new, f"{number} - {name} - {PARENT_ABBR}")
+		for abbr in (CHILD_A_ABBR, CHILD_B_ABBR):
+			self.assertTrue(frappe.db.exists("Account", f"{number} - {name} - {abbr}"))
+			self.assertFalse(frappe.db.exists("Account", f"{ledger.account_name} - {abbr}"))

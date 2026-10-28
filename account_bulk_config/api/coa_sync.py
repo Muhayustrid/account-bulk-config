@@ -11,7 +11,7 @@ no longer has can be deleted, and problems are reported per account instead of f
 import erpnext
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr
+from frappe.utils import cint, cstr, sbool
 from frappe.utils.nestedset import get_ancestors_of, get_descendants_of
 
 # the fields ERPNext pushes from a parent account to its existing copies
@@ -412,16 +412,26 @@ def _update(account: str, values: dict) -> None:
 
 
 def _renumber(row: dict, renamed: dict) -> None:
+	account = row["account"]
+	new_name = _rename(
+		account, frappe.db.get_value("Account", account, "account_name"), row["account_number"]
+	)
+	if new_name != account:
+		renamed[account] = new_name
+
+
+def _rename(account: str, account_name: str, account_number: str | None) -> str:
+	"""Set an account's name and number and rename the document to match, as ERPNext does."""
 	from erpnext.accounts.utils import get_autoname_with_number
 
-	account = row["account"]
+	account_name, account_number = account_name.strip(), cstr(account_number).strip()
 	doc = frappe.get_doc("Account", account)
-	doc.validate_account_number(row["account_number"])
-	frappe.db.set_value("Account", account, "account_number", row["account_number"])
-	new_name = get_autoname_with_number(row["account_number"], doc.account_name, doc.company)
+	doc.validate_account_number(account_number)
+	frappe.db.set_value("Account", account, {"account_name": account_name, "account_number": account_number})
+	new_name = get_autoname_with_number(account_number, account_name, doc.company)
 	if new_name != account:
 		frappe.rename_doc("Account", account, new_name, force=True, show_alert=False)
-		renamed[account] = new_name
+	return new_name
 
 
 def _error_message(exc: Exception) -> str:
@@ -474,4 +484,120 @@ def on_update(doc, method=None):
 		_("Akun disalin ke anak perusahaan di background; hasilnya muncul sebagai notifikasi."),
 		alert=True,
 		indicator="blue",
+	)
+
+
+# -- renaming an account in the parent: rename its copies in the background ---------------------
+
+
+@frappe.whitelist()
+def update_account_number(name, account_name, account_number=None, from_descendant=False):
+	"""ERPNext's update_account_number, minus renaming every child company's copy in this request.
+
+	ERPNext renames the copies one rename_doc each (every link to the account rewritten) inside the
+	same request, which times out with many child companies. The parent account is renamed here,
+	its copies by a background job.
+	"""
+	from erpnext.accounts.doctype.account import account as erpnext_account
+
+	account = frappe.get_doc("Account", name)
+	descendants = get_descendants_of("Company", account.company)
+	if sbool(from_descendant) or not descendants:
+		return erpnext_account.update_account_number(name, account_name, account_number, from_descendant)
+
+	account.check_permission("write")
+	old_name, old_number = account.account_name, account.account_number
+	_check_rename_in_ancestors(account)
+	# from_descendant=True: ERPNext then renames this account only; the ancestor check is done above
+	new_name = erpnext_account.update_account_number(name, account_name, account_number, from_descendant=True)
+	if (old_name, cstr(old_number)) == (cstr(account_name).strip(), cstr(account_number).strip()):
+		return new_name
+
+	frappe.enqueue(
+		"account_bulk_config.api.coa_sync.run_rename_job",
+		queue="long",
+		timeout=3600,
+		enqueue_after_commit=True,
+		now=frappe.in_test,
+		company=account.company,
+		old_name=old_name,
+		old_number=old_number,
+		account_name=account_name,
+		account_number=account_number,
+		account=new_name or name,
+		user=frappe.session.user,
+	)
+	frappe.msgprint(
+		_("Nama/nomor akun di anak perusahaan diganti di background; hasilnya muncul sebagai notifikasi."),
+		alert=True,
+		indicator="blue",
+	)
+	return new_name
+
+
+def _check_rename_in_ancestors(account) -> None:
+	# the same refusal ERPNext gives before renaming an account its parent company also has
+	if not get_ancestors_of("Company", account.company) or frappe.get_cached_value(
+		"Company", account.company, "allow_account_creation_against_child_company"
+	):
+		return
+	for ancestor in get_ancestors_of("Company", account.company):
+		if frappe.db.get_value(
+			"Account",
+			{
+				"account_number": account.account_number,
+				"account_name": account.account_name,
+				"company": ancestor,
+			},
+			"name",
+		):
+			frappe.throw(
+				_("Account {0} exists in parent company {1}.").format(
+					frappe.bold(account.account_name), frappe.bold(ancestor)
+				)
+				+ "<br>"
+				+ _("Renaming it is only allowed via parent company {0}, to avoid mismatch.").format(
+					frappe.bold(ancestor)
+				)
+				+ "<br><br>"
+				+ _("To overrule this, enable '{0}' in company {1}").format(
+					_("Allow Account Creation Against Child Company"), frappe.bold(account.company)
+				),
+				title=_("Rename Not Allowed"),
+			)
+
+
+def run_rename_job(company, old_name, old_number, account_name, account_number, account, user=None) -> None:
+	"""Rename the child companies' copies, matched the way ERPNext does: old name, and old number if any."""
+	filters = {"company": ["in", get_descendants_of("Company", company)], "account_name": old_name}
+	if old_number:
+		filters["account_number"] = old_number
+	results = []
+	for copy in frappe.get_all("Account", filters=filters, fields=["name", "company"], order_by="lft"):
+		result = {
+			"company": copy.company,
+			"created": 0,
+			"updated": 0,
+			"deleted": 0,
+			"issues": [],
+			"error": None,
+		}
+		frappe.db.savepoint("bac_coa_rename")
+		try:
+			_rename(copy.name, account_name, account_number)
+			result["updated"] = 1
+		except Exception as e:  # noqa: BLE001
+			frappe.db.rollback(save_point="bac_coa_rename")
+			result["issues"].append(f"{copy.name}: {_error_message(e)}")
+		else:
+			frappe.db.release_savepoint("bac_coa_rename")
+		# in tests the job runs inline (now=True) and must stay inside the test's transaction
+		if not frappe.in_test:
+			frappe.db.commit()
+		frappe.clear_messages()
+		results.append(result)
+	frappe.publish_realtime(
+		"bulk_account_config_coa_done",
+		{"job_id": None, "parent_company": company, "account": account, "results": results, "error": None},
+		user=user,
 	)
