@@ -56,6 +56,11 @@ def _match(index: dict, src: dict) -> dict | None:
 	return candidates[0] if candidates else None
 
 
+def _norm(field: str, value) -> str:
+	# a blank freeze_account means "No", ERPNext's default
+	return value or ("No" if field == "freeze_account" else "")
+
+
 def _label(acc: dict) -> str:
 	return f"{acc.account_number} - {acc.account_name}" if acc.account_number else acc.account_name
 
@@ -103,7 +108,7 @@ def _plan_company(source: list[dict], company: str, update_existing: bool) -> di
 				)
 				continue
 			mapped[src.name] = {"name": existing.name, "is_group": existing.is_group}
-			diff = {f: src[f] for f in SYNC_FIELDS if (existing[f] or "") != (src[f] or "")}
+			diff = {f: src[f] for f in SYNC_FIELDS if _norm(f, existing[f]) != _norm(f, src[f])}
 			if update_existing and diff:
 				update.append({"account": existing.name, "label": _label(src), "values": diff})
 			continue
@@ -284,7 +289,7 @@ def on_update(doc, method=None):
 	if not doc.flags.bac_sync_children:
 		return
 	before = doc.get_doc_before_save()
-	if before and all((before.get(f) or "") == (doc.get(f) or "") for f in SYNC_FIELDS):
+	if before and all(_norm(f, before.get(f)) == _norm(f, doc.get(f)) for f in SYNC_FIELDS):
 		return
 	frappe.enqueue(
 		"account_bulk_config.api.coa_sync.run_job",

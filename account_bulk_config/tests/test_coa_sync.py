@@ -75,6 +75,15 @@ class TestCoaSync(IntegrationTestCase):
 		self.assertEqual((again["create"], again["update"]), ([], []))
 		self.assertEqual(again["issues"], [])
 
+	def test_blank_freeze_account_equals_no(self):
+		ledger = self._parent_account("BAC Sync Freeze", self.cash, freeze_account="No")
+		apply(PARENT, [CHILD_B])
+		child = f"{ledger.account_name} - {CHILD_B_ABBR}"
+		frappe.db.set_value("Account", child, "freeze_account", None)
+
+		[plan] = preview(PARENT, [CHILD_B])
+		self.assertNotIn(child, [u["account"] for u in plan["update"]])
+
 	def test_existing_accounts_get_the_parent_fields(self):
 		ledger = self._parent_account("BAC Sync Bank", self.cash, account_type="Cash")
 		apply(PARENT, [CHILD_B])
