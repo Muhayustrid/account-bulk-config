@@ -1,8 +1,9 @@
 // Copyright (c) 2026, Rotiri Project and contributors
 // For license information, please see license.txt
 
-// Copy a parent company's chart of accounts to its child companies (Chart of Accounts menu and
-// Bulk Company Accounts menu), plus the notice for accounts copied in the background after save.
+// Copy a company's chart of accounts to its child companies or to any other company (Chart of
+// Accounts menu and Bulk Company Accounts menu), plus the notice for accounts copied in the
+// background after save.
 
 frappe.provide("account_bulk_config");
 
@@ -21,7 +22,7 @@ function list(items, limit = 50) {
 }
 
 function preview_html(plans) {
-	if (!plans.length) return `<p class="text-muted">${__("Tidak ada anak perusahaan.")}</p>`;
+	if (!plans.length) return `<p class="text-muted">${__("Tidak ada company tujuan.")}</p>`;
 	return plans
 		.map((p) => {
 			const create = p.create.map(
@@ -65,17 +66,23 @@ function show_results(results, title, error) {
 account_bulk_config.coa_sync_dialog = function (parent_company) {
 	let previewed = null;
 	const d = new frappe.ui.Dialog({
-		title: __("Salin COA ke Anak Perusahaan"),
+		title: __("Salin COA"),
 		size: "large",
 		fields: [
 			{
 				fieldname: "parent_company",
-				label: __("Company Induk"),
+				label: __("Company Sumber"),
 				fieldtype: "Link",
 				options: "Company",
 				reqd: 1,
-				get_query: () => ({ filters: { is_group: 1 } }),
 				change: () => load_children(),
+			},
+			{
+				fieldname: "any_company",
+				label: __("Salin ke company mana pun, bukan hanya anak perusahaan"),
+				fieldtype: "Check",
+				default: 0,
+				change: () => reset(),
 			},
 			{
 				fieldname: "update_existing",
@@ -88,7 +95,9 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 			},
 			{
 				fieldname: "delete_missing",
-				label: __("Hapus akun di anak yang tidak ada di induk (akun yang sudah ada transaksinya tetap)"),
+				label: __(
+					"Hapus akun di company tujuan yang tidak ada di company sumber (akun yang sudah ada transaksinya tetap)",
+				),
 				fieldtype: "Check",
 				default: 0,
 				change: () => reset(),
@@ -100,13 +109,23 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 				options: [],
 				columns: 2,
 				select_all: 1,
+				depends_on: "eval:!doc.any_company",
 				on_change: () => reset(),
+			},
+			{
+				fieldname: "targets",
+				label: __("Company Tujuan"),
+				fieldtype: "MultiSelectList",
+				depends_on: "eval:doc.any_company",
+				get_data: (txt) =>
+					frappe.db.get_link_options("Company", txt, { name: ["!=", d.get_value("parent_company") || ""] }),
+				change: () => reset(),
 			},
 			{
 				fieldname: "help",
 				fieldtype: "HTML",
 				options: `<p class="text-muted small">${__(
-					"Akun dicocokkan berdasarkan nama (dan nomor akun bila ada). Akun yang belum ada dibuat di bawah induk yang sama, induknya ikut dibuat bila perlu. Akun yang hanya ada di anak tidak disentuh, kecuali opsi hapus dicentang.",
+					"Akun dicocokkan berdasarkan nama (dan nomor akun bila ada). Akun yang belum ada dibuat di bawah induk akun yang sama, induknya ikut dibuat bila perlu; akun akar (Asset, Liability, dst.) tidak pernah dibuat. Akun yang hanya ada di company tujuan tidak disentuh, kecuali opsi hapus dicentang.",
 				)}</p>`,
 			},
 			{ fieldname: "preview", fieldtype: "HTML" },
@@ -122,12 +141,18 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 	};
 
 	// a copy: the control keeps mutating its own array as boxes are ticked
-	const args = () => ({
-		parent_company: d.get_value("parent_company"),
-		companies: [...d.fields_dict.companies.get_checked_options()],
-		update_existing: d.get_value("update_existing") ? 1 : 0,
-		delete_missing: d.get_value("delete_missing") ? 1 : 0,
-	});
+	const args = () => {
+		const any_company = d.get_value("any_company") ? 1 : 0;
+		return {
+			parent_company: d.get_value("parent_company"),
+			companies: any_company
+				? [...(d.get_value("targets") || [])]
+				: [...d.fields_dict.companies.get_checked_options()],
+			update_existing: d.get_value("update_existing") ? 1 : 0,
+			delete_missing: d.get_value("delete_missing") ? 1 : 0,
+			any_company,
+		};
+	};
 
 	function load_children() {
 		reset();
@@ -148,7 +173,9 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 		const a = args();
 		if (!a.parent_company) return;
 		if (!a.companies.length) {
-			frappe.msgprint(__("Pilih minimal satu anak perusahaan"));
+			frappe.msgprint(
+				a.any_company ? __("Pilih minimal satu company tujuan") : __("Pilih minimal satu anak perusahaan"),
+			);
 			return;
 		}
 		frappe
@@ -170,7 +197,7 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 					frappe.show_alert({
 						message: issues
 							? __("Tidak ada yang bisa disalin; {0} akun bermasalah, lihat preview", [issues])
-							: __("COA anak perusahaan sudah sama dengan induk"),
+							: __("COA company tujuan sudah sama dengan company sumber"),
 						indicator: issues ? "orange" : "green",
 					});
 					return;
@@ -183,8 +210,11 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 	function run() {
 		const a = previewed;
 		const question = a.delete_missing
-			? __("Buat/update/hapus akun di anak perusahaan sesuai COA {0}?", [a.parent_company])
-			: __("Buat/update akun di anak perusahaan sesuai COA {0}?", [a.parent_company]);
+			? __("Buat/update/hapus akun di {0} company tujuan sesuai COA {1}?", [
+					a.companies.length,
+					a.parent_company,
+				])
+			: __("Buat/update akun di {0} company tujuan sesuai COA {1}?", [a.companies.length, a.parent_company]);
 		frappe.confirm(question, () => {
 			// listen before the call: a quick batch can finish before the response arrives
 			let job_id = null;

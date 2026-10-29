@@ -8,7 +8,7 @@
 		tree.menu_items = tree.menu_items || [];
 		tree.menu_items.push({
 			bac_coa_sync: 1,
-			label: __("Salin COA ke Anak Perusahaan…"),
+			label: __("Salin COA ke Anak / Company Lain…"),
 			condition: () => frappe.model.can_create("Account"),
 			action: () => {
 				const page =
