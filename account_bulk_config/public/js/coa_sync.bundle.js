@@ -186,18 +186,15 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 			? __("Buat/update/hapus akun di anak perusahaan sesuai COA {0}?", [a.parent_company])
 			: __("Buat/update akun di anak perusahaan sesuai COA {0}?", [a.parent_company]);
 		frappe.confirm(question, () => {
-			// listen before the call: a quick job can finish before the response arrives
+			// listen before the call: a quick batch can finish before the response arrives
 			let job_id = null;
 			const early = [];
-			const done = (data) => {
-				frappe.realtime.off(EVENT, handler);
-				show_results(data.results || [], null, data.error);
-			};
 			const handler = (data) => {
 				if (!data || data.account) return;
 				if (!job_id) early.push(data);
-				else if (data.job_id === job_id) done(data);
+				else if (data.job_id === job_id && batches.add(data)) frappe.realtime.off(EVENT, handler);
 			};
+			const batches = new Batches(__("Hasil Salin COA"), { progress: true });
 			frappe.realtime.on(EVENT, handler);
 			frappe
 				.xcall(`${METHOD}.apply`, a, "POST", { freeze: true, freeze_message: __("Menyalin COA…") })
@@ -209,12 +206,11 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 						return;
 					}
 					frappe.show_alert({
-						message: __("{0} akun diproses di background", [out.total]),
+						message: __("{0} akun di {1} anak perusahaan diproses di background", [out.total, out.companies]),
 						indicator: "blue",
 					});
 					job_id = out.job_id;
-					const finished = early.find((data) => data.job_id === job_id);
-					if (finished) done(finished);
+					early.filter((data) => data.job_id === job_id).forEach(handler);
 				})
 				.catch(() => frappe.realtime.off(EVENT, handler));
 		});
@@ -225,21 +221,58 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 	return d;
 };
 
-// account saved in a parent company: its copies were made by a background job
+// background batches of one copy: gathered and reported once, when the last one is in
+class Batches {
+	constructor(title, { progress = false, report } = {}) {
+		this.title = title;
+		this.progress = progress;
+		this.report = report || ((results, error) => show_results(results, title, error));
+		this.results = [];
+		this.errors = [];
+	}
+
+	// true once the last batch is in
+	add(data) {
+		this.results.push(...(data.results || []));
+		if (data.error) this.errors.push(data.error);
+		if (data.done < data.total) {
+			if (this.progress) {
+				frappe.show_alert({
+					message: __("{0}: {1} dari {2} anak perusahaan selesai", [this.title, data.done, data.total]),
+					indicator: "blue",
+				});
+			}
+			return false;
+		}
+		this.report(this.results, this.errors.join("; "));
+		return true;
+	}
+}
+
+// account saved or renamed in a parent company: its copies were made by background jobs
 $(document).on("app_ready", () => {
+	const pending = {};
 	frappe.realtime.on(EVENT, (data) => {
 		if (!data || !data.account) return;
-		const results = data.results || [];
-		if (data.error || results.some((r) => r.error || r.issues.length)) {
-			show_results(results, __("Salin {0} ke anak perusahaan", [data.account]), data.error);
-			return;
-		}
-		const created = results.reduce((n, r) => n + r.created + r.updated, 0);
-		if (created) {
-			frappe.show_alert({
-				message: __("{0} disalin ke {1} anak perusahaan", [esc(data.account), results.length]),
-				indicator: "green",
+		const key = data.job_id || data.account;
+		const title = __("Salin {0} ke anak perusahaan", [data.account]);
+		pending[key] =
+			pending[key] ||
+			new Batches(title, {
+				report: (results, error) => {
+					if (error || results.some((r) => r.error || r.issues.length)) {
+						show_results(results, title, error);
+						return;
+					}
+					const changed = results.filter((r) => r.created || r.updated).length;
+					if (changed) {
+						frappe.show_alert({
+							message: __("{0} diterapkan ke {1} anak perusahaan", [esc(data.account), changed]),
+							indicator: "green",
+						});
+					}
+				},
 			});
-		}
+		if (pending[key].add(data)) delete pending[key];
 	});
 });

@@ -8,15 +8,27 @@ fields ERPNext keeps in sync (plus their place in the tree and their number), ac
 no longer has can be deleted, and problems are reported per account instead of failing the save.
 """
 
+import json
+
 import erpnext
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr, sbool
+from frappe.utils import cint, cstr, now_datetime, sbool, time_diff_in_seconds
+from frappe.utils.background_jobs import is_job_enqueued
 from frappe.utils.nestedset import get_ancestors_of, get_descendants_of
 
 # the fields ERPNext pushes from a parent account to its existing copies
 SYNC_FIELDS = ("account_type", "freeze_account", "balance_must_be")
 SYNC_LIMIT = 30
+# child companies per background job; each job queues the next, so a worker that dies (restart,
+# memory) loses one small batch instead of the whole copy, and jobs never fight over the Account tree
+CHUNK = 5
+EVENT = "bulk_account_config_coa_done"
+# where each running chain keeps its next batch (tabDefaultValue), so resume_stalled can restart it
+CHAIN_PARENT = "__bac_coa_chain"
+# a batch whose job is gone this long is restarted, at most MAX_ATTEMPTS times before it is skipped
+STALL_SECONDS = 5 * 60
+MAX_ATTEMPTS = 3
 FIELDS = [
 	"name",
 	"account_name",
@@ -40,7 +52,7 @@ def _check_permission(delete_missing=0):
 
 def _children(parent_company: str, companies=None) -> list[str]:
 	descendants = get_descendants_of("Company", parent_company)
-	if companies:
+	if companies is not None:
 		companies = frappe.parse_json(companies) if isinstance(companies, str) else companies
 		return [c for c in descendants if c in set(companies)]
 	return descendants
@@ -243,7 +255,7 @@ def preview(
 
 @frappe.whitelist(methods=["POST"])
 def apply(parent_company: str, companies=None, update_existing: int = 1, delete_missing: int = 0) -> dict:
-	"""Small copies run right away; bigger ones go to a background job that reports by realtime."""
+	"""Small copies run right away; bigger ones go to background jobs that report by realtime."""
 	_check_permission(delete_missing)
 	plans = _plan(parent_company, companies, update_existing=update_existing, delete_missing=delete_missing)
 	total = _size(plans)
@@ -253,34 +265,127 @@ def apply(parent_company: str, companies=None, update_existing: int = 1, delete_
 		return {"results": _apply_plans(parent_company, plans)}
 
 	job_id = f"bac_coa_{frappe.generate_hash(length=12)}"
-	frappe.enqueue(
-		"account_bulk_config.api.coa_sync.run_job",
-		queue="long",
-		timeout=3600,
-		job_id=job_id,
-		bac_job_id=job_id,
+	pending = [p["company"] for p in plans if p["create"] or p["update"] or p["delete"] or p["issues"]]
+	_enqueue_next(
+		"run_job",
+		"long",
+		job_id,
+		pending,
+		0,
+		after_commit=True,
 		parent_company=parent_company,
-		companies=[p["company"] for p in plans],
 		update_existing=update_existing,
 		delete_missing=delete_missing,
 		user=frappe.session.user,
 	)
-	return {"job_id": job_id, "total": total}
+	return {"job_id": job_id, "total": total, "companies": len(pending)}
+
+
+def _enqueue_next(method, queue, job_id, companies, done, total=None, after_commit=False, **kwargs) -> None:
+	"""Queue the job for the next CHUNK companies; it queues the one after when it is done.
+
+	The chain's state is saved in the same transaction: rolled back with it, and left for
+	resume_stalled when a worker dies (restart, memory) and takes the job with it.
+	"""
+	if not companies:
+		frappe.defaults.set_default(job_id, None, CHAIN_PARENT)
+		return
+	state = {
+		"method": method,
+		"queue": queue,
+		"companies": companies,
+		"done": done,
+		"total": done + len(companies) if total is None else total,
+		"attempts": 0,
+		"at": str(now_datetime()),
+		"kwargs": kwargs,
+	}
+	frappe.defaults.set_default(job_id, json.dumps(state), CHAIN_PARENT)
+	_enqueue(job_id, state, after_commit)
+
+
+def _rq_job_id(job_id: str, state: dict) -> str:
+	return f"{job_id}-{state['done']}-{state['attempts']}"
+
+
+def _enqueue(job_id: str, state: dict, after_commit: bool = False) -> None:
+	frappe.enqueue(
+		f"account_bulk_config.api.coa_sync.{state['method']}",
+		queue=state["queue"],
+		timeout=3600,
+		enqueue_after_commit=after_commit,
+		now=frappe.in_test,
+		job_id=_rq_job_id(job_id, state),
+		deduplicate=not frappe.in_test,
+		bac_job_id=job_id,
+		bac_queue=state["queue"],
+		companies=state["companies"],
+		done=state["done"],
+		total=state["total"],
+		**state["kwargs"],
+	)
+
+
+def resume_stalled() -> None:
+	"""Scheduled: restart chains whose batch job is gone, so a worker restart cannot stop a copy."""
+	for row in frappe.get_all(
+		"DefaultValue", filters={"parent": CHAIN_PARENT}, fields=["defkey", "defvalue"]
+	):
+		job_id, state = row.defkey, json.loads(row.defvalue)
+		if time_diff_in_seconds(now_datetime(), state["at"]) < STALL_SECONDS or is_job_enqueued(
+			_rq_job_id(job_id, state)
+		):
+			continue
+		if state["attempts"] + 1 < MAX_ATTEMPTS:
+			state.update(attempts=state["attempts"] + 1, at=str(now_datetime()))
+			frappe.defaults.set_default(job_id, json.dumps(state), CHAIN_PARENT)
+			_enqueue(job_id, state, after_commit=True)
+			continue
+
+		# the batch keeps killing its worker: report it and go on with the rest
+		kwargs = state["kwargs"]
+		chunk, rest = state["companies"][:CHUNK], state["companies"][CHUNK:]
+		_publish(
+			kwargs.get("user"),
+			job_id,
+			kwargs.get("parent_company") or kwargs.get("company"),
+			[],
+			_(
+				"Worker berhenti {0} kali saat memproses {1}; dilewati, jalankan Salin COA lagi untuk mencoba ulang"
+			).format(MAX_ATTEMPTS, ", ".join(chunk)),
+			state["done"] + len(chunk),
+			state["total"],
+			account=kwargs.get("account") or (kwargs.get("accounts") or [None])[0],
+		)
+		_enqueue_next(
+			state["method"],
+			state["queue"],
+			job_id,
+			rest,
+			state["done"] + len(chunk),
+			total=state["total"],
+			after_commit=True,
+			**kwargs,
+		)
 
 
 def run_job(
 	parent_company,
-	companies=None,
+	companies,
 	accounts=None,
 	update_existing=1,
 	delete_missing=0,
 	user=None,
 	bac_job_id=None,
+	bac_queue="long",
+	done=0,
+	total=None,
 	job_id=None,
 ) -> None:
+	chunk, rest = companies[:CHUNK], companies[CHUNK:]
 	error = None
 	try:
-		plans = _plan(parent_company, companies, accounts, update_existing, delete_missing)
+		plans = _plan(parent_company, chunk, accounts, update_existing, delete_missing)
 		# in tests the job runs inline (now=True) and must stay inside the test's transaction
 		results = _apply_plans(parent_company, plans, commit=not frappe.in_test)
 	except Exception as e:  # noqa: BLE001
@@ -289,15 +394,47 @@ def run_job(
 		frappe.log_error(_("Salin COA {0} gagal").format(parent_company))
 		if not frappe.in_test:
 			frappe.db.rollback()
+	_publish(
+		user,
+		bac_job_id,
+		parent_company,
+		results,
+		error,
+		done + len(chunk),
+		total or len(companies),
+		# set when the job follows an account saved in the parent rather than the copy dialog
+		account=accounts[0] if accounts else None,
+	)
+	_enqueue_next(
+		"run_job",
+		bac_queue,
+		bac_job_id,
+		rest,
+		done + len(chunk),
+		total=total,
+		after_commit=True,
+		parent_company=parent_company,
+		accounts=accounts,
+		update_existing=update_existing,
+		delete_missing=delete_missing,
+		user=user,
+	)
+	if not frappe.in_test:
+		frappe.db.commit()
+
+
+def _publish(user, job_id, parent_company, results, error, done, total, account=None) -> None:
 	frappe.publish_realtime(
-		"bulk_account_config_coa_done",
+		EVENT,
 		{
-			"job_id": bac_job_id,
+			"job_id": job_id,
 			"parent_company": parent_company,
-			# set when the job follows an account saved in the parent rather than the copy dialog
-			"account": accounts[0] if accounts else None,
+			"account": account,
 			"results": results,
 			"error": error,
+			# the client gathers every batch's results and reports once done reaches total
+			"done": done,
+			"total": total,
 		},
 		user=user,
 	)
@@ -470,12 +607,13 @@ def on_update(doc, method=None):
 		and all(_norm(f, before.get(f)) == _norm(f, doc.get(f)) for f in SYNC_FIELDS)
 	):
 		return
-	frappe.enqueue(
-		"account_bulk_config.api.coa_sync.run_job",
-		queue="default",
-		timeout=1800,
-		enqueue_after_commit=True,
-		now=frappe.in_test,
+	_enqueue_next(
+		"run_job",
+		"default",
+		f"bac_coa_{frappe.generate_hash(length=12)}",
+		_children(doc.company),
+		0,
+		after_commit=True,
 		parent_company=doc.company,
 		accounts=[doc.name],
 		user=frappe.session.user,
@@ -513,12 +651,13 @@ def update_account_number(name, account_name, account_number=None, from_descenda
 	if (old_name, cstr(old_number)) == (cstr(account_name).strip(), cstr(account_number).strip()):
 		return new_name
 
-	frappe.enqueue(
-		"account_bulk_config.api.coa_sync.run_rename_job",
-		queue="long",
-		timeout=3600,
-		enqueue_after_commit=True,
-		now=frappe.in_test,
+	_enqueue_next(
+		"run_rename_job",
+		"long",
+		f"bac_coa_{frappe.generate_hash(length=12)}",
+		descendants,
+		0,
+		after_commit=True,
 		company=account.company,
 		old_name=old_name,
 		old_number=old_number,
@@ -567,9 +706,24 @@ def _check_rename_in_ancestors(account) -> None:
 			)
 
 
-def run_rename_job(company, old_name, old_number, account_name, account_number, account, user=None) -> None:
+def run_rename_job(
+	company,
+	old_name,
+	old_number,
+	account_name,
+	account_number,
+	account,
+	companies,
+	user=None,
+	bac_job_id=None,
+	bac_queue="long",
+	done=0,
+	total=None,
+	job_id=None,
+) -> None:
 	"""Rename the child companies' copies, matched the way ERPNext does: old name, and old number if any."""
-	filters = {"company": ["in", get_descendants_of("Company", company)], "account_name": old_name}
+	chunk, rest = companies[:CHUNK], companies[CHUNK:]
+	filters = {"company": ["in", chunk], "account_name": old_name}
 	if old_number:
 		filters["account_number"] = old_number
 	results = []
@@ -596,8 +750,22 @@ def run_rename_job(company, old_name, old_number, account_name, account_number, 
 			frappe.db.commit()
 		frappe.clear_messages()
 		results.append(result)
-	frappe.publish_realtime(
-		"bulk_account_config_coa_done",
-		{"job_id": None, "parent_company": company, "account": account, "results": results, "error": None},
+	_publish(user, bac_job_id, company, results, None, done + len(chunk), total or len(companies), account)
+	_enqueue_next(
+		"run_rename_job",
+		bac_queue,
+		bac_job_id,
+		rest,
+		done + len(chunk),
+		total=total,
+		after_commit=True,
+		company=company,
+		old_name=old_name,
+		old_number=old_number,
+		account_name=account_name,
+		account_number=account_number,
+		account=account,
 		user=user,
 	)
+	if not frappe.in_test:
+		frappe.db.commit()

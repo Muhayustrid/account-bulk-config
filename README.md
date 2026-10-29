@@ -59,3 +59,8 @@ perusahaannya banyak, request ini bisa melewati batas waktu web (*Request Timed 
   sesuai Balance Must Be, nomor akun sudah dipakai) dilaporkan, akun lain tetap tersalin.
 - Penyalinan lebih dari 30 akun, atau yang mengganti nomor akun, berjalan di background (worker
   queue *long* harus jalan); hasil atau errornya muncul sebagai pesan.
+- Pekerjaan background dibagi per 5 anak perusahaan, satu job per batch, berurutan. Progresnya
+  muncul sebagai notifikasi "x dari y anak perusahaan selesai". Kalau worker mati di tengah jalan
+  (deploy, restart, kehabisan memori), job terjadwal tiap 5 menit melanjutkan batch yang terhenti;
+  batch yang tiga kali membuat worker mati dilewati dan dilaporkan. Menjalankan Salin COA lagi aman:
+  akun yang sudah tersalin tidak dibuat ulang.

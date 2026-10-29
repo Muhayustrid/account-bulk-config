@@ -34,6 +34,13 @@ override_whitelisted_methods = {
 	),
 }
 
+# restart Salin COA batches whose worker died (deploy, restart, out of memory)
+scheduler_events = {
+	"cron": {
+		"*/5 * * * *": ["account_bulk_config.api.coa_sync.resume_stalled"],
+	},
+}
+
 doc_events = {
 	"Account": {
 		"before_validate": "account_bulk_config.api.coa_sync.before_validate",
