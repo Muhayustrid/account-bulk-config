@@ -173,7 +173,8 @@ def import_sheet(target: str, file_url: str) -> dict:
 			"errors": [{"row": 1, "message": _("Missing required column(s): {0}").format(", ".join(missing_keys))}],
 		}
 
-	unknown_cols = [h for h in raw_headers if h not in valid_columns]
+	# a column without a header (an index added by a spreadsheet tool, say) is not ours: skip it
+	unknown_cols = [h for h in raw_headers if h and h not in valid_columns]
 	if unknown_cols:
 		return {
 			"changes": [],

@@ -1,4 +1,4 @@
-"""Copy a parent company's chart of accounts to its child companies.
+"""Copy a company's chart of accounts to its child companies, or to any other company.
 
 ERPNext copies a new account of a root company to every descendant inside the same save, one
 nested-set insert per company, and throws when a child misses the parent account. With many
@@ -56,6 +56,19 @@ def _children(parent_company: str, companies=None) -> list[str]:
 		companies = frappe.parse_json(companies) if isinstance(companies, str) else companies
 		return [c for c in descendants if c in set(companies)]
 	return descendants
+
+
+def _targets(source: str, companies=None, any_company=0) -> list[str]:
+	"""The companies to copy to: picked children, or with any_company the picked companies, whoever they are."""
+	if not cint(any_company):
+		return _children(source, companies)
+	companies = frappe.parse_json(companies) if isinstance(companies, str) else companies or []
+	found = (
+		set(frappe.get_all("Company", filters={"name": ["in", companies]}, pluck="name"))
+		if companies
+		else set()
+	)
+	return [c for c in dict.fromkeys(companies) if c in found and c != source]
 
 
 def _accounts(company: str) -> list[dict]:
@@ -139,6 +152,14 @@ def _plan_company(
 			continue
 
 		existing = matches.get(src.name)
+		if not existing and not src.parent_account:
+			# a company on another chart template: never grow a second tree beside its own roots
+			issues.append(
+				_("{0}: akun akar ini tidak ada di {1}; akun di bawahnya dilewati").format(
+					_label(src), company
+				)
+			)
+			continue
 		if not existing:
 			if _number(src) and _number(src) in numbers:
 				conflicts.add(numbers[_number(src)])
@@ -222,7 +243,7 @@ def _deletable(accounts: list[dict], matches: dict, conflicts: set) -> list[dict
 
 
 def _plan(
-	parent_company, companies=None, accounts=None, update_existing=True, delete_missing=False
+	parent_company, companies=None, accounts=None, update_existing=True, delete_missing=False, any_company=0
 ) -> list[dict]:
 	source = _accounts(parent_company)
 	if accounts:
@@ -231,7 +252,7 @@ def _plan(
 		delete_missing = False
 	return [
 		_plan_company(source, c, cint(update_existing), cint(delete_missing))
-		for c in _children(parent_company, companies)
+		for c in _targets(parent_company, companies, any_company)
 	]
 
 
@@ -246,18 +267,40 @@ def get_children(parent_company: str) -> list[str]:
 
 @frappe.whitelist()
 def preview(
-	parent_company: str, companies=None, update_existing: int = 1, delete_missing: int = 0
+	parent_company: str,
+	companies=None,
+	update_existing: int = 1,
+	delete_missing: int = 0,
+	any_company: int = 0,
 ) -> list[dict]:
-	"""Per child company: the accounts that would be created, updated or deleted, and the ones that cannot."""
+	"""Per target company: the accounts that would be created, updated or deleted, and the ones that cannot."""
 	_check_permission(delete_missing)
-	return _plan(parent_company, companies, update_existing=update_existing, delete_missing=delete_missing)
+	return _plan(
+		parent_company,
+		companies,
+		update_existing=update_existing,
+		delete_missing=delete_missing,
+		any_company=any_company,
+	)
 
 
 @frappe.whitelist(methods=["POST"])
-def apply(parent_company: str, companies=None, update_existing: int = 1, delete_missing: int = 0) -> dict:
+def apply(
+	parent_company: str,
+	companies=None,
+	update_existing: int = 1,
+	delete_missing: int = 0,
+	any_company: int = 0,
+) -> dict:
 	"""Small copies run right away; bigger ones go to background jobs that report by realtime."""
 	_check_permission(delete_missing)
-	plans = _plan(parent_company, companies, update_existing=update_existing, delete_missing=delete_missing)
+	plans = _plan(
+		parent_company,
+		companies,
+		update_existing=update_existing,
+		delete_missing=delete_missing,
+		any_company=any_company,
+	)
 	total = _size(plans)
 	# renumbering renames the account and every link to it, too slow for a web request
 	renames = any("account_number" in u for p in plans for u in p["update"])
@@ -276,6 +319,7 @@ def apply(parent_company: str, companies=None, update_existing: int = 1, delete_
 		parent_company=parent_company,
 		update_existing=update_existing,
 		delete_missing=delete_missing,
+		any_company=any_company,
 		user=frappe.session.user,
 	)
 	return {"job_id": job_id, "total": total, "companies": len(pending)}
@@ -381,11 +425,12 @@ def run_job(
 	done=0,
 	total=None,
 	job_id=None,
+	any_company=0,
 ) -> None:
 	chunk, rest = companies[:CHUNK], companies[CHUNK:]
 	error = None
 	try:
-		plans = _plan(parent_company, chunk, accounts, update_existing, delete_missing)
+		plans = _plan(parent_company, chunk, accounts, update_existing, delete_missing, any_company)
 		# in tests the job runs inline (now=True) and must stay inside the test's transaction
 		results = _apply_plans(parent_company, plans, commit=not frappe.in_test)
 	except Exception as e:  # noqa: BLE001
@@ -417,6 +462,7 @@ def run_job(
 		accounts=accounts,
 		update_existing=update_existing,
 		delete_missing=delete_missing,
+		any_company=any_company,
 		user=user,
 	)
 	if not frappe.in_test:

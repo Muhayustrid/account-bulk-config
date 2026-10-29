@@ -313,3 +313,63 @@ class TestCoaSync(IntegrationTestCase):
 		self.assertEqual([(b["done"], b["total"]) for b in batches], [(1, 2), (2, 2)])
 		self.assertFalse(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_B_ABBR}"))
 		self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_A_ABBR}"))
+
+	def test_copy_to_any_company_not_only_children(self):
+		cash_a = f"Cash In Hand - {CHILD_A_ABBR}"
+		doc = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": f"BAC Sync Saudara {self.tag}",
+				"company": CHILD_A,
+				"parent_account": cash_a,
+			}
+		)
+		doc.flags.ignore_root_company_validation = True
+		doc.insert()
+
+		# CHILD_B is CHILD_A's sibling, not its child
+		self.assertEqual(preview(CHILD_A, [CHILD_B]), [])
+		# the source itself is never a target
+		self.assertEqual(
+			[p["company"] for p in preview(CHILD_A, [CHILD_B, CHILD_A], any_company=1)], [CHILD_B]
+		)
+		[result] = apply(CHILD_A, [CHILD_B], any_company=1)["results"]
+		self.assertEqual(result["company"], CHILD_B)
+		self.assertEqual(_parent_of(CHILD_B, doc.account_name), f"Cash In Hand - {CHILD_B_ABBR}")
+
+	def test_copy_to_any_company_in_background_batches(self):
+		ledger = self._parent_account("BAC Sync Bebas", self.cash)
+		with patch("account_bulk_config.api.coa_sync.SYNC_LIMIT", 0):
+			out = apply(PARENT, [CHILD_B], any_company=1)
+		self.assertEqual(out["companies"], 1)
+		self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_B_ABBR}"))
+
+	def test_a_root_the_target_lacks_is_reported_not_created(self):
+		root = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": f"BAC Sync Akar {self.tag}",
+				"company": CHILD_A,
+				"is_group": 1,
+				"root_type": "Asset",
+				"report_type": "Balance Sheet",
+			}
+		)
+		root.flags.ignore_root_company_validation = True
+		# ERPNext inserts its own roots the same way: they have no parent account
+		root.flags.ignore_mandatory = True
+		root.insert()
+		child = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": f"BAC Sync Di Akar {self.tag}",
+				"company": CHILD_A,
+				"parent_account": root.name,
+			}
+		)
+		child.flags.ignore_root_company_validation = True
+		child.insert()
+
+		[plan] = preview(CHILD_A, [CHILD_B], any_company=1)
+		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
+		self.assertEqual(len(_own(plan["issues"], self.tag)), 1)
