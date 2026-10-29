@@ -1,9 +1,21 @@
 """Tests for copying a parent company's chart of accounts to its children."""
 
+import json
+from unittest.mock import patch
+
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from account_bulk_config.api.coa_sync import apply, preview, run_job, update_account_number
+from account_bulk_config.api.coa_sync import (
+	CHAIN_PARENT,
+	EVENT,
+	MAX_ATTEMPTS,
+	apply,
+	preview,
+	resume_stalled,
+	run_job,
+	update_account_number,
+)
 from account_bulk_config.tests.factories import (
 	CHILD_A,
 	CHILD_A_ABBR,
@@ -243,3 +255,61 @@ class TestCoaSync(IntegrationTestCase):
 		for abbr in (CHILD_A_ABBR, CHILD_B_ABBR):
 			self.assertTrue(frappe.db.exists("Account", f"{number} - {name} - {abbr}"))
 			self.assertFalse(frappe.db.exists("Account", f"{ledger.account_name} - {abbr}"))
+
+	def test_background_copy_runs_in_batches_that_each_report(self):
+		ledger = self._parent_account("BAC Sync Batch", self.cash)
+		with (
+			patch("account_bulk_config.api.coa_sync.CHUNK", 1),
+			patch("account_bulk_config.api.coa_sync.frappe.publish_realtime") as publish,
+		):
+			run_job(PARENT, [CHILD_A, CHILD_B], bac_job_id="bac_test")
+
+		for abbr in (CHILD_A_ABBR, CHILD_B_ABBR):
+			self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {abbr}"))
+		batches = [c.args[1] for c in publish.call_args_list if c.args[0] == EVENT]
+		self.assertEqual(
+			[(b["job_id"], b["done"], b["total"]) for b in batches], [("bac_test", 1, 2), ("bac_test", 2, 2)]
+		)
+		self.assertEqual([r["company"] for b in batches for r in b["results"]], [CHILD_A, CHILD_B])
+
+	def _stalled_chain(self, companies, attempts=0):
+		# what a batch leaves behind when its worker dies mid-copy
+		state = {
+			"method": "run_job",
+			"queue": "long",
+			"companies": companies,
+			"done": 0,
+			"total": len(companies),
+			"attempts": attempts,
+			"at": "2000-01-01 00:00:00",
+			"kwargs": {
+				"parent_company": PARENT,
+				"update_existing": 1,
+				"delete_missing": 0,
+				"user": "Administrator",
+			},
+		}
+		frappe.defaults.set_default("bac_coa_test", json.dumps(state), CHAIN_PARENT)
+
+	def test_stalled_chain_is_resumed(self):
+		ledger = self._parent_account("BAC Sync Lanjut", self.cash)
+		self._stalled_chain([CHILD_A])
+
+		resume_stalled()
+		self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_A_ABBR}"))
+		self.assertFalse(frappe.db.exists("DefaultValue", {"parent": CHAIN_PARENT, "defkey": "bac_coa_test"}))
+
+	def test_batch_that_keeps_dying_is_skipped_and_reported(self):
+		ledger = self._parent_account("BAC Sync Mati", self.cash)
+		self._stalled_chain([CHILD_B, CHILD_A], attempts=MAX_ATTEMPTS - 1)
+		with (
+			patch("account_bulk_config.api.coa_sync.CHUNK", 1),
+			patch("account_bulk_config.api.coa_sync.frappe.publish_realtime") as publish,
+		):
+			resume_stalled()
+
+		batches = [c.args[1] for c in publish.call_args_list if c.args[0] == EVENT]
+		self.assertIn(CHILD_B, batches[0]["error"])
+		self.assertEqual([(b["done"], b["total"]) for b in batches], [(1, 2), (2, 2)])
+		self.assertFalse(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_B_ABBR}"))
+		self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_A_ABBR}"))
