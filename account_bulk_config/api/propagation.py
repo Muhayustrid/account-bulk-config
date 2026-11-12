@@ -92,7 +92,7 @@ def preview_propagation(
 	if not changes:
 		return []
 
-	doctype, _, field_defs = TARGETS[target]
+	doctype, _child_table, field_defs = TARGETS[target]
 	field_map = {f["fieldname"]: f for f in field_defs}
 
 	# Every lookup below is one query for all changes, so preview cost does not grow per row.

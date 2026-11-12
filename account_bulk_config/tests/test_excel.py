@@ -172,6 +172,24 @@ class TestExcel(IntegrationTestCase):
 		self.assertEqual(out["errors"], [])
 		self.assertEqual([(c["name"], c["field"], c["new"]) for c in out["changes"]], [(ITEM_1, "income_account", sales_a)])
 
+	def test_import_skips_columns_without_header(self):
+		sales_a = acct("Sales", CHILD_A)
+		# a spreadsheet tool's row index in front, with no header
+		url = self._sheet(
+			[
+				[None, "name", "item_name", "company", "income_account"],
+				[224, ITEM_1, "any label", CHILD_A, sales_a],
+			]
+		)
+		out = import_sheet("item", url)
+		self.assertEqual(out["errors"], [])
+		self.assertEqual(
+			[(c["name"], c["field"], c["new"]) for c in out["changes"]], [(ITEM_1, "income_account", sales_a)]
+		)
+
+		url = self._sheet([["name", "company", "nope"], [ITEM_1, CHILD_A, "x"]])
+		self.assertIn("nope", import_sheet("item", url)["errors"][0]["message"])
+
 	def test_import_flags_group_company(self):
 		url = self._sheet([
 			["company", "default_income_account"],

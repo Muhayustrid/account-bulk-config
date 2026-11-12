@@ -1,11 +1,21 @@
 """Tests for copying a parent company's chart of accounts to its children."""
 
+import json
 from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from account_bulk_config.api.coa_sync import apply, preview
+from account_bulk_config.api.coa_sync import (
+	CHAIN_PARENT,
+	EVENT,
+	MAX_ATTEMPTS,
+	apply,
+	preview,
+	resume_stalled,
+	run_job,
+	update_account_number,
+)
 from account_bulk_config.tests.factories import (
 	CHILD_A,
 	CHILD_A_ABBR,
@@ -98,8 +108,7 @@ class TestCoaSync(IntegrationTestCase):
 
 		[plan] = preview(PARENT, [CHILD_B])
 		self.assertEqual(
-			[u for u in plan["update"] if u["account"] == child],
-			[{"account": child, "label": ledger.account_name, "values": {"account_type": "Cash"}}],
+			[u["values"] for u in plan["update"] if u["account"] == child], [{"account_type": "Cash"}]
 		)
 		self.assertNotIn(
 			child, [u["account"] for u in preview(PARENT, [CHILD_B], update_existing=0)[0]["update"]]
@@ -194,3 +203,215 @@ class TestCoaSync(IntegrationTestCase):
 	def test_a_company_that_has_a_parent_can_be_the_source(self):
 		# CHILD_A has a parent but no children of its own
 		self.assertEqual(preview(CHILD_A), [])
+
+	def test_moved_account_follows_the_parent(self):
+		old = self._parent_account("BAC Sync Lama", self.cash, is_group=1)
+		new = self._parent_account("BAC Sync Pindah", self.cash, is_group=1)
+		ledger = self._parent_account("BAC Sync Geser", old.name)
+		apply(PARENT, [CHILD_A])
+
+		ledger.parent_account = new.name
+		ledger.flags.ignore_root_company_validation = True
+		ledger.save()
+
+		[plan] = preview(PARENT, [CHILD_A])
+		child = f"{ledger.account_name} - {CHILD_A_ABBR}"
+		self.assertIn(child, [u["account"] for u in plan["update"]])
+		apply(PARENT, [CHILD_A])
+		self.assertEqual(_parent_of(CHILD_A, ledger.account_name), f"{new.account_name} - {CHILD_A_ABBR}")
+
+	def test_a_refused_account_does_not_block_the_others(self):
+		frozen = self._parent_account("BAC Sync Beku", self.cash, freeze_account="Yes")
+		apply(PARENT, [CHILD_B])
+		child = f"{frozen.account_name} - {CHILD_B_ABBR}"
+		frappe.db.set_value("Account", child, "freeze_account", "No")
+		frappe.db.set_value("Company", CHILD_B, "role_allowed_for_frozen_entries", None)
+		ledger = self._parent_account("BAC Sync Lolos", self.cash)
+
+		[result] = apply(PARENT, [CHILD_B])["results"]
+		# ERPNext refuses the freeze without the frozen-entries role; the new account still goes in
+		self.assertEqual(len(_own(result["issues"], self.tag)), 1)
+		self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_B_ABBR}"))
+
+	def test_used_account_number_is_reported_not_created(self):
+		number = frappe.generate_hash(length=8)
+		self._parent_account("BAC Sync Nomor", self.cash, account_number=number)
+		doc = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": f"BAC Sync Milik Anak {self.tag}",
+				"account_number": number,
+				"company": CHILD_A,
+				"parent_account": f"Cash In Hand - {CHILD_A_ABBR}",
+			}
+		)
+		doc.flags.ignore_root_company_validation = True
+		doc.insert()
+
+		[plan] = preview(PARENT, [CHILD_A])
+		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
+		self.assertEqual(len(_own(plan["issues"], self.tag)), 1)
+
+	def test_renumbered_parent_account_renumbers_the_copy(self):
+		ledger = self._parent_account("BAC Sync Renomor", self.cash)
+		apply(PARENT, [CHILD_A])
+		number = frappe.generate_hash(length=8)
+		frappe.db.set_value("Account", ledger.name, "account_number", number)
+
+		[plan] = preview(PARENT, [CHILD_A])
+		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
+		[row] = [u for u in plan["update"] if self.tag in u["account"]]
+		self.assertEqual(row["account_number"], number)
+
+		run_job(PARENT, [CHILD_A])
+		self.assertTrue(frappe.db.exists("Account", f"{number} - {ledger.account_name} - {CHILD_A_ABBR}"))
+
+	def test_accounts_gone_from_the_parent_are_deleted_only_on_request(self):
+		ledger = self._parent_account("BAC Sync Hapus", self.cash)
+		apply(PARENT, [CHILD_A])
+		child = f"{ledger.account_name} - {CHILD_A_ABBR}"
+		frappe.delete_doc("Account", ledger.name)
+
+		[plan] = preview(PARENT, [CHILD_A])
+		self.assertEqual(plan["delete"], [])
+		[plan] = preview(PARENT, [CHILD_A], delete_missing=1)
+		self.assertIn(child, [r["account"] for r in plan["delete"]])
+
+		apply(PARENT, [CHILD_A], delete_missing=1)
+		self.assertFalse(frappe.db.exists("Account", child))
+
+	def test_renaming_in_parent_renames_the_copies(self):
+		self.assertEqual(
+			frappe.get_hooks("override_whitelisted_methods")[
+				"erpnext.accounts.doctype.account.account.update_account_number"
+			][-1],
+			"account_bulk_config.api.coa_sync.update_account_number",
+		)
+		ledger = self._parent_account("BAC Sync Nama", self.cash)
+		apply(PARENT, [CHILD_A, CHILD_B])
+		name = f"BAC Sync Nama Baru {self.tag}"
+		number = frappe.generate_hash(length=8)
+
+		new = update_account_number(ledger.name, name, number)
+		self.assertEqual(new, f"{number} - {name} - {PARENT_ABBR}")
+		for abbr in (CHILD_A_ABBR, CHILD_B_ABBR):
+			self.assertTrue(frappe.db.exists("Account", f"{number} - {name} - {abbr}"))
+			self.assertFalse(frappe.db.exists("Account", f"{ledger.account_name} - {abbr}"))
+
+	def test_background_copy_runs_in_batches_that_each_report(self):
+		ledger = self._parent_account("BAC Sync Batch", self.cash)
+		with (
+			patch("account_bulk_config.api.coa_sync.CHUNK", 1),
+			patch("account_bulk_config.api.coa_sync.frappe.publish_realtime") as publish,
+		):
+			run_job(PARENT, [CHILD_A, CHILD_B], bac_job_id="bac_test")
+
+		for abbr in (CHILD_A_ABBR, CHILD_B_ABBR):
+			self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {abbr}"))
+		batches = [c.args[1] for c in publish.call_args_list if c.args[0] == EVENT]
+		self.assertEqual(
+			[(b["job_id"], b["done"], b["total"]) for b in batches], [("bac_test", 1, 2), ("bac_test", 2, 2)]
+		)
+		self.assertEqual([r["company"] for b in batches for r in b["results"]], [CHILD_A, CHILD_B])
+
+	def _stalled_chain(self, companies, attempts=0):
+		# what a batch leaves behind when its worker dies mid-copy
+		state = {
+			"method": "run_job",
+			"queue": "long",
+			"companies": companies,
+			"done": 0,
+			"total": len(companies),
+			"attempts": attempts,
+			"at": "2000-01-01 00:00:00",
+			"kwargs": {
+				"parent_company": PARENT,
+				"update_existing": 1,
+				"delete_missing": 0,
+				"user": "Administrator",
+			},
+		}
+		frappe.defaults.set_default("bac_coa_test", json.dumps(state), CHAIN_PARENT)
+
+	def test_stalled_chain_is_resumed(self):
+		ledger = self._parent_account("BAC Sync Lanjut", self.cash)
+		self._stalled_chain([CHILD_A])
+
+		resume_stalled()
+		self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_A_ABBR}"))
+		self.assertFalse(frappe.db.exists("DefaultValue", {"parent": CHAIN_PARENT, "defkey": "bac_coa_test"}))
+
+	def test_batch_that_keeps_dying_is_skipped_and_reported(self):
+		ledger = self._parent_account("BAC Sync Mati", self.cash)
+		self._stalled_chain([CHILD_B, CHILD_A], attempts=MAX_ATTEMPTS - 1)
+		with (
+			patch("account_bulk_config.api.coa_sync.CHUNK", 1),
+			patch("account_bulk_config.api.coa_sync.frappe.publish_realtime") as publish,
+		):
+			resume_stalled()
+
+		batches = [c.args[1] for c in publish.call_args_list if c.args[0] == EVENT]
+		self.assertIn(CHILD_B, batches[0]["error"])
+		self.assertEqual([(b["done"], b["total"]) for b in batches], [(1, 2), (2, 2)])
+		self.assertFalse(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_B_ABBR}"))
+		self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_A_ABBR}"))
+
+	def test_copy_to_any_company_not_only_children(self):
+		cash_a = f"Cash In Hand - {CHILD_A_ABBR}"
+		doc = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": f"BAC Sync Saudara {self.tag}",
+				"company": CHILD_A,
+				"parent_account": cash_a,
+			}
+		)
+		doc.flags.ignore_root_company_validation = True
+		doc.insert()
+
+		# CHILD_B is CHILD_A's sibling, not its child
+		self.assertEqual(preview(CHILD_A, [CHILD_B]), [])
+		# the source itself is never a target
+		self.assertEqual(
+			[p["company"] for p in preview(CHILD_A, [CHILD_B, CHILD_A], any_company=1)], [CHILD_B]
+		)
+		[result] = apply(CHILD_A, [CHILD_B], any_company=1)["results"]
+		self.assertEqual(result["company"], CHILD_B)
+		self.assertEqual(_parent_of(CHILD_B, doc.account_name), f"Cash In Hand - {CHILD_B_ABBR}")
+
+	def test_copy_to_any_company_in_background_batches(self):
+		ledger = self._parent_account("BAC Sync Bebas", self.cash)
+		with patch("account_bulk_config.api.coa_sync.SYNC_LIMIT", 0):
+			out = apply(PARENT, [CHILD_B], any_company=1)
+		self.assertEqual(out["companies"], 1)
+		self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_B_ABBR}"))
+
+	def test_a_root_the_target_lacks_is_reported_not_created(self):
+		root = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": f"BAC Sync Akar {self.tag}",
+				"company": CHILD_A,
+				"is_group": 1,
+				"root_type": "Asset",
+				"report_type": "Balance Sheet",
+			}
+		)
+		root.flags.ignore_root_company_validation = True
+		# ERPNext inserts its own roots the same way: they have no parent account
+		root.flags.ignore_mandatory = True
+		root.insert()
+		child = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": f"BAC Sync Di Akar {self.tag}",
+				"company": CHILD_A,
+				"parent_account": root.name,
+			}
+		)
+		child.flags.ignore_root_company_validation = True
+		child.insert()
+
+		[plan] = preview(CHILD_A, [CHILD_B], any_company=1)
+		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
+		self.assertEqual(len(_own(plan["issues"], self.tag)), 1)

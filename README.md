@@ -32,7 +32,7 @@ dan penggantinya, cek preview field yang akan berubah, lalu **Terapkan & Repost*
 - Akun piutang/utang hanya bisa diganti dengan akun bertipe sama, dan mata uang akun harus sama.
 - Aturan periode tertutup, deferred dan izin sama dengan **Update Jurnal Lama**.
 
-## Salin COA ke Anak Perusahaan
+## Salin COA ke Anak / Company Lain
 
 ERPNext menyalin akun baru dari company induk teratas ke **setiap** anak perusahaan dalam satu
 request simpan, dan menolak simpan kalau induk akun itu belum ada di salah satu anak. Kalau anak
@@ -41,9 +41,30 @@ perusahaannya banyak, request ini bisa melewati batas waktu web (*Request Timed 
 - Akun yang disimpan di company induk langsung tersimpan. Salinan ke anak perusahaan dibuat oleh
   background job (worker harus jalan), termasuk induk akunnya kalau belum ada. Hasilnya muncul
   sebagai notifikasi; akun yang tidak bisa disalin ditampilkan alasannya.
-- Menu **Salin COA ke Anak Perusahaan…** (Chart of Accounts > ⋯, atau Bulk Company Accounts > ⋯)
-  membandingkan COA induk dengan anak perusahaan yang dipilih, menampilkan akun yang akan dibuat/
-  diupdate, lalu menyalinnya. Akun dicocokkan berdasarkan nama (dan nomor akun bila ada); akun yang
-  sudah ada disamakan Account Type, Freeze dan Balance Must Be-nya (opsional); akun yang hanya ada
-  di anak tidak disentuh; akun yang di anak berupa ledger sedangkan di induk berupa grup dilewati.
-- Penyalinan lebih dari 30 akun berjalan di background.
+- **Update Account Number / Name** pada akun company induk hanya mengganti akun induk di request itu;
+  akun yang sama di semua anak perusahaan diganti nama/nomornya oleh background job (worker queue
+  *long* harus jalan), lalu hasilnya muncul sebagai notifikasi. Sebelumnya ERPNext mengganti semuanya
+  dalam satu request dan pasti *Request Timed Out* kalau anak perusahaannya banyak.
+- Menu **Salin COA ke Anak / Company Lain…** (Chart of Accounts > ⋯, atau Bulk Company Accounts > ⋯)
+  membandingkan COA company sumber dengan company tujuan, menampilkan akun yang akan dibuat/
+  diupdate/dihapus, lalu menyalinnya. Akun dicocokkan berdasarkan nama dan nomor akun, lalu nama
+  saja; akun yang di tujuan berupa ledger sedangkan di sumber berupa grup dilewati.
+- Tujuannya anak perusahaan sumber, atau — dengan opsi **Salin ke company mana pun** — company apa
+  saja yang dipilih (saudara, induk, atau company di grup lain). Akun akar (Asset, Liability, dst.)
+  tidak pernah dibuat: kalau company tujuan tidak punya akar yang sama (misal chart template
+  berbeda), akar itu dan isinya dilewati dan dilaporkan.
+- Akun yang sudah ada (opsional, default aktif) disamakan Account Type, Freeze, Balance Must Be,
+  **induk akunnya** (akun yang dipindah di induk ikut dipindah) dan **nomor akunnya** (akun yang
+  diberi/diganti nomor di induk ikut diganti).
+- Akun yang hanya ada di anak tidak disentuh, kecuali opsi **Hapus akun di anak yang tidak ada di
+  induk** dicentang (untuk akun yang dihapus di induk). Akun yang sudah punya transaksi atau masih
+  dipakai sebagai akun default tidak terhapus dan ditampilkan alasannya.
+- Tiap akun disimpan sendiri-sendiri: akun yang ditolak ERPNext (misal izin Freeze, saldo tidak
+  sesuai Balance Must Be, nomor akun sudah dipakai) dilaporkan, akun lain tetap tersalin.
+- Penyalinan lebih dari 30 akun, atau yang mengganti nomor akun, berjalan di background (worker
+  queue *long* harus jalan); hasil atau errornya muncul sebagai pesan.
+- Pekerjaan background dibagi per 5 anak perusahaan, satu job per batch, berurutan. Progresnya
+  muncul sebagai notifikasi "x dari y anak perusahaan selesai". Kalau worker mati di tengah jalan
+  (deploy, restart, kehabisan memori), job terjadwal tiap 5 menit melanjutkan batch yang terhenti;
+  batch yang tiga kali membuat worker mati dilewati dan dilaporkan. Menjalankan Salin COA lagi aman:
+  akun yang sudah tersalin tidak dibuat ulang.
