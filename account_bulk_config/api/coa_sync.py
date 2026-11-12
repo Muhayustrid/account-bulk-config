@@ -13,8 +13,8 @@ from frappe import _
 from frappe.utils import cint
 from frappe.utils.nestedset import get_ancestors_of, get_descendants_of
 
-# the fields ERPNext pushes from a parent account to its existing copies
-SYNC_FIELDS = ("account_type", "freeze_account", "balance_must_be")
+# fields copied from a source account to its existing copies
+SYNC_FIELDS = ("account_type", "account_category", "freeze_account", "balance_must_be")
 SYNC_LIMIT = 30
 FIELDS = [
 	"name",

@@ -80,7 +80,7 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 			},
 			{
 				fieldname: "update_existing",
-				label: __("Samakan juga Account Type, Freeze dan Balance Must Be di akun yang sudah ada"),
+				label: __("Samakan juga Account Type, Account Category, Freeze dan Balance Must Be di akun yang sudah ada"),
 				fieldtype: "Check",
 				default: 1,
 				change: () => reset(),

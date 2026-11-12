@@ -1,6 +1,7 @@
 """Test world and data factories for account_bulk_config."""
 
 import frappe
+from frappe.utils import add_days, getdate, today
 
 PARENT = "BAC Parent"
 PARENT_ABBR = "BACP"
@@ -43,6 +44,20 @@ def setup_world() -> None:
 	# Ensure child companies exist
 	_setup_company(CHILD_A, CHILD_A_ABBR, parent_company=PARENT)
 	_setup_company(CHILD_B, CHILD_B_ABBR, parent_company=PARENT)
+
+	# Transaction tests include postings up to 45 days before today.
+	for year in {getdate(today()).year, getdate(add_days(today(), -45)).year}:
+		name = f"BAC Test Fiscal Year {year}"
+		if not frappe.db.exists("Fiscal Year", name):
+			frappe.get_doc(
+				{
+					"doctype": "Fiscal Year",
+					"year": name,
+					"year_start_date": f"{year}-01-01",
+					"year_end_date": f"{year}-12-31",
+					"companies": [{"company": c} for c in (PARENT, CHILD_A, CHILD_B)],
+				}
+			).insert()
 
 	# Ensure UOM exists
 	if not frappe.db.exists("UOM", "Nos"):

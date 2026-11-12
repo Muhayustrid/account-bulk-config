@@ -1,5 +1,7 @@
 """Tests for copying a parent company's chart of accounts to its children."""
 
+from unittest.mock import patch
+
 import frappe
 from frappe.tests import IntegrationTestCase
 
@@ -29,6 +31,10 @@ def _parent_of(company, account_name):
 class TestCoaSync(IntegrationTestCase):
 	def setUp(self):
 		setup_world()
+		# These tests exercise inline results even when shared fixtures need a large sync.
+		inline = patch("account_bulk_config.api.coa_sync.SYNC_LIMIT", float("inf"))
+		inline.start()
+		self.addCleanup(inline.stop)
 		self.tag = frappe.generate_hash(length=6)
 		self.cash = frappe.db.get_value(
 			"Account", {"company": PARENT, "account_name": "Cash In Hand", "is_group": 1}, "name"
@@ -102,6 +108,42 @@ class TestCoaSync(IntegrationTestCase):
 		apply(PARENT, [CHILD_B])
 		self.assertEqual(frappe.db.get_value("Account", child, "account_type"), "Cash")
 
+	def test_account_category_is_copied_and_synced(self):
+		category = frappe.get_doc(
+			{
+				"doctype": "Account Category",
+				"account_category_name": f"BAC Sync Category {self.tag}",
+				"root_type": "Asset",
+			}
+		).insert()
+		ledger = self._parent_account("BAC Sync Category", self.cash, account_category=category.name)
+		[result] = apply(PARENT, [CHILD_B])["results"]
+		self.assertIsNone(result["error"])
+		child = f"{ledger.account_name} - {CHILD_B_ABBR}"
+		self.assertEqual(frappe.db.get_value("Account", child, "account_category"), category.name)
+
+		frappe.db.set_value("Account", child, "account_category", None)
+		[plan] = preview(PARENT, [CHILD_B])
+		self.assertEqual(
+			[u["values"] for u in plan["update"] if u["account"] == child],
+			[{"account_category": category.name}],
+		)
+		[disabled] = preview(PARENT, [CHILD_B], update_existing=0)
+		self.assertNotIn(child, [u["account"] for u in disabled["update"]])
+		apply(PARENT, [CHILD_B], update_existing=0)
+		self.assertFalse(frappe.db.get_value("Account", child, "account_category"))
+
+		[result] = apply(PARENT, [CHILD_B])["results"]
+		self.assertIsNone(result["error"])
+		self.assertEqual(frappe.db.get_value("Account", child, "account_category"), category.name)
+
+		frappe.db.set_value("Account", ledger.name, "account_category", None)
+		[result] = apply(PARENT, [CHILD_B])["results"]
+		self.assertIsNone(result["error"])
+		self.assertFalse(frappe.db.get_value("Account", child, "account_category"))
+		[again] = preview(PARENT, [CHILD_B])
+		self.assertNotIn(child, [u["account"] for u in again["update"]])
+
 	def test_group_mismatch_is_reported_not_created(self):
 		group = self._parent_account("BAC Sync Beda", self.cash, is_group=1)
 		ledger = self._parent_account("BAC Sync Isi", group.name)
@@ -141,6 +183,8 @@ class TestCoaSync(IntegrationTestCase):
 			self.assertEqual(_parent_of(company, ledger.account_name), f"{group.account_name} - {abbr}")
 		self.assertEqual(ledger.name, f"{ledger.account_name} - {PARENT_ABBR}")
 
+		# Inline jobs changed nested-set positions after this instance was inserted.
+		ledger.reload()
 		ledger.account_type = "Bank"
 		ledger.save()
 		self.assertEqual(
