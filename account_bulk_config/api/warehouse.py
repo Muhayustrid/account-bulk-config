@@ -3,8 +3,8 @@
 import frappe
 from frappe.utils import cint
 
+from account_bulk_config.api.account_identity import swap_company_suffix
 from account_bulk_config.api.fields import WAREHOUSE_FIELDS
-from account_bulk_config.api.propagation import _swap_abbr
 
 WAREHOUSE_FIELDNAMES = [f["fieldname"] for f in WAREHOUSE_FIELDS]
 
@@ -118,7 +118,7 @@ def build_fill_changes(
 		dst_abbr = abbr_map.get(r["company"])
 		for f in fields:
 			val = src.get(f)
-			mapped = _swap_abbr(val, src_abbr, dst_abbr)
+			mapped = swap_company_suffix(val, src_abbr, dst_abbr)
 			if mapped:
 				candidate_names.add(mapped)
 
@@ -139,7 +139,7 @@ def build_fill_changes(
 		row_abbr = abbr_map.get(row_company)
 		for f in fields:
 			src_val = src.get(f)
-			mapped = _swap_abbr(src_val, src_abbr, row_abbr)
+			mapped = swap_company_suffix(src_val, src_abbr, row_abbr)
 			if not mapped or (mapped, row_company) not in valid_accounts:
 				not_found.append({"name": r["name"], "company": row_company, "field": f, "value": src_val})
 				continue

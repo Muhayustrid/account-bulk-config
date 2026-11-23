@@ -47,18 +47,24 @@ perusahaannya banyak, request ini bisa melewati batas waktu web (*Request Timed 
   dalam satu request dan pasti *Request Timed Out* kalau anak perusahaannya banyak.
 - Menu **Salin COA ke Anak / Company Lain…** (Chart of Accounts > ⋯, atau Bulk Company Accounts > ⋯)
   membandingkan COA company sumber dengan company tujuan, menampilkan akun yang akan dibuat/
-  diupdate/dihapus, lalu menyalinnya. Akun dicocokkan berdasarkan nama dan nomor akun, lalu nama
-  saja; akun yang di tujuan berupa ledger sedangkan di sumber berupa grup dilewati.
+  diupdate/dihapus, lalu menyalinnya. Akun dicocokkan berdasarkan nama dokumen dengan suffix
+  company (pemetaan yang sama dengan halaman lain), lalu nomor akun, lalu nama yang unik; induk
+  akun dipakai sebagai penentu terakhir untuk nama kembar. Nama yang tetap ambigu dilewati dan
+  kandidatnya tidak dihapus. Akun yang di tujuan berupa ledger sedangkan di sumber berupa grup
+  dilewati.
 - Tujuannya anak perusahaan sumber, atau — dengan opsi **Salin ke company mana pun** — company apa
   saja yang dipilih (saudara, induk, atau company di grup lain). Akun akar (Asset, Liability, dst.)
   tidak pernah dibuat: kalau company tujuan tidak punya akar yang sama (misal chart template
   berbeda), akar itu dan isinya dilewati dan dilaporkan.
-- Akun yang sudah ada (opsional, default aktif) disamakan Account Type, Freeze, Balance Must Be,
-  **induk akunnya** (akun yang dipindah di induk ikut dipindah) dan **nomor akunnya** (akun yang
-  diberi/diganti nomor di induk ikut diganti).
+- Akun yang sudah ada (opsional, default aktif) disamakan Account Type, Account Category, Freeze,
+  Balance Must Be, **induk akunnya** (akun yang dipindah di induk ikut dipindah), **nomor akunnya**
+  (akun yang diberi/diganti nomor di induk ikut diganti) dan **nama akunnya** (akun yang diganti
+  nama di induk ikut diganti nama, termasuk link-nya).
 - Akun yang hanya ada di anak tidak disentuh, kecuali opsi **Hapus akun di anak yang tidak ada di
-  induk** dicentang (untuk akun yang dihapus di induk). Akun yang sudah punya transaksi atau masih
-  dipakai sebagai akun default tidak terhapus dan ditampilkan alasannya.
+  induk** dicentang (untuk akun yang dihapus di induk). Akun yang sudah punya transaksi (GL Entry)
+  tidak pernah dihapus: akun itu dan grup yang menaunginya tetap, lalu ditampilkan sebagai
+  **Tetap (punya transaksi)** di preview. Akun yang masih dipakai sebagai akun default tidak
+  terhapus dan ditampilkan alasannya.
 - Tiap akun disimpan sendiri-sendiri: akun yang ditolak ERPNext (misal izin Freeze, saldo tidak
   sesuai Balance Must Be, nomor akun sudah dipakai) dilaporkan, akun lain tetap tersalin.
 - Penyalinan lebih dari 30 akun, atau yang mengganti nomor akun, berjalan di background (worker

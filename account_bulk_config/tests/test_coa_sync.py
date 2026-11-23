@@ -88,8 +88,9 @@ class TestCoaSync(IntegrationTestCase):
 		)
 
 		[again] = preview(PARENT, [CHILD_A])
-		self.assertEqual((again["create"], again["update"]), ([], []))
-		self.assertEqual(again["issues"], [])
+		self.assertEqual(again["create"], [])
+		self.assertEqual([u for u in again["update"] if self.tag in u["account"]], [])
+		self.assertEqual(_own(again["issues"], self.tag), [])
 
 	def test_blank_freeze_account_equals_no(self):
 		ledger = self._parent_account("BAC Sync Freeze", self.cash, freeze_account="No")
@@ -233,13 +234,14 @@ class TestCoaSync(IntegrationTestCase):
 		self.assertEqual(len(_own(result["issues"], self.tag)), 1)
 		self.assertTrue(frappe.db.exists("Account", f"{ledger.account_name} - {CHILD_B_ABBR}"))
 
-	def test_used_account_number_is_reported_not_created(self):
+	def test_same_number_follows_the_parent_name(self):
 		number = frappe.generate_hash(length=8)
-		self._parent_account("BAC Sync Nomor", self.cash, account_number=number)
+		source = self._parent_account("BAC Sync Nomor", self.cash, account_number=number)
+		old_name = f"BAC Sync Milik Anak {self.tag}"
 		doc = frappe.get_doc(
 			{
 				"doctype": "Account",
-				"account_name": f"BAC Sync Milik Anak {self.tag}",
+				"account_name": old_name,
 				"account_number": number,
 				"company": CHILD_A,
 				"parent_account": f"Cash In Hand - {CHILD_A_ABBR}",
@@ -247,10 +249,205 @@ class TestCoaSync(IntegrationTestCase):
 		)
 		doc.flags.ignore_root_company_validation = True
 		doc.insert()
+		child = doc.name
 
 		[plan] = preview(PARENT, [CHILD_A])
 		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
+		self.assertEqual(_own(plan["issues"], self.tag), [])
+		[row] = [u for u in plan["update"] if u["account"] == child]
+		self.assertEqual(row["account_name"], source.account_name)
+
+		apply(PARENT, [CHILD_A])
+		expected = f"{number} - {source.account_name} - {CHILD_A_ABBR}"
+		self.assertEqual(
+			frappe.db.get_value("Account", {"company": CHILD_A, "account_number": number}, "name"), expected
+		)
+		self.assertEqual(frappe.db.count("Account", {"company": CHILD_A, "account_number": number}), 1)
+
+	def test_duplicate_names_and_renamed_copies_follow_their_number(self):
+		group_a = self._parent_account("BAC Sync Grup A", self.cash, is_group=1)
+		group_b = self._parent_account("BAC Sync Grup B", self.cash, is_group=1)
+		apply(PARENT, [CHILD_A])
+		group_a_child = f"{group_a.account_name} - {CHILD_A_ABBR}"
+		group_b_child = f"{group_b.account_name} - {CHILD_A_ABBR}"
+		number_a, number_b = f"1{self.tag}", f"2{self.tag}"
+		source_a = self._parent_account("BAC Sync Kembar", group_a.name, account_number=number_a)
+		source_b = self._parent_account("BAC Sync Kembar", group_b.name, account_number=number_b)
+		for number, name, parent in (
+			(number_a, f"BAC Sync Lama A {self.tag}", group_a_child),
+			(number_b, f"BAC Sync Lama B {self.tag}", group_b_child),
+		):
+			doc = frappe.get_doc(
+				{
+					"doctype": "Account",
+					"account_name": name,
+					"account_number": number,
+					"company": CHILD_A,
+					"parent_account": parent,
+				}
+			)
+			doc.flags.ignore_root_company_validation = True
+			doc.insert()
+
+		[plan] = preview(PARENT, [CHILD_A])
+		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
+		self.assertEqual(_own(plan["issues"], self.tag), [])
+
+		apply(PARENT, [CHILD_A])
+		for source, parent in ((source_a, group_a_child), (source_b, group_b_child)):
+			child = frappe.db.get_value(
+				"Account", {"company": CHILD_A, "account_number": source.account_number}, "name"
+			)
+			self.assertEqual(child, f"{source.account_number} - {source.account_name} - {CHILD_A_ABBR}")
+			self.assertEqual(frappe.db.get_value("Account", child, "parent_account"), parent)
+
+	def test_ambiguous_name_is_reported_not_created(self):
+		parent = f"Cash In Hand - {CHILD_A_ABBR}"
+		children = []
+		for number in (f"1{self.tag}", f"2{self.tag}"):
+			doc = frappe.get_doc(
+				{
+					"doctype": "Account",
+					"account_name": f"BAC Sync Ambigu {self.tag}",
+					"account_number": number,
+					"company": CHILD_A,
+					"parent_account": parent,
+				}
+			)
+			doc.flags.ignore_root_company_validation = True
+			doc.insert()
+			children.append(doc.name)
+		source = self._parent_account("BAC Sync Ambigu", self.cash)
+		self.addCleanup(frappe.delete_doc, "Account", source.name)
+		for name in children:
+			self.addCleanup(frappe.delete_doc, "Account", name)
+
+		[plan] = preview(PARENT, [CHILD_A], delete_missing=1)
+		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
 		self.assertEqual(len(_own(plan["issues"], self.tag)), 1)
+		deleted = [r["account"] for r in plan["delete"]]
+		for name in children:
+			self.assertNotIn(name, deleted)
+
+	def test_ambiguous_group_branch_is_not_deleted(self):
+		parent = f"Cash In Hand - {CHILD_A_ABBR}"
+		names = []
+		for number in (f"3{self.tag}", f"4{self.tag}"):
+			group = frappe.get_doc(
+				{
+					"doctype": "Account",
+					"account_name": f"BAC Sync Ambigu Grup {self.tag}",
+					"account_number": number,
+					"company": CHILD_A,
+					"parent_account": parent,
+					"is_group": 1,
+				}
+			)
+			group.flags.ignore_root_company_validation = True
+			group.insert()
+			child = frappe.get_doc(
+				{
+					"doctype": "Account",
+					"account_name": f"BAC Sync Ambigu Isi {number}",
+					"company": CHILD_A,
+					"parent_account": group.name,
+				}
+			)
+			child.flags.ignore_root_company_validation = True
+			child.insert()
+			names += [group.name, child.name]
+		source = self._parent_account("BAC Sync Ambigu Grup", self.cash, is_group=1)
+		self.addCleanup(frappe.delete_doc, "Account", source.name)
+		for name in names:
+			self.addCleanup(frappe.delete_doc, "Account", name)
+
+		[plan] = preview(PARENT, [CHILD_A], delete_missing=1)
+		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
+		self.assertEqual(len(_own(plan["issues"], self.tag)), 1)
+		deleted = [r["account"] for r in plan["delete"]]
+		for name in names:
+			self.assertNotIn(name, deleted)
+
+	def test_single_account_job_uses_the_full_source_to_match(self):
+		group = self._parent_account("BAC Sync Cabang", self.cash, is_group=1)
+		apply(PARENT, [CHILD_A])
+		group_child = f"{group.account_name} - {CHILD_A_ABBR}"
+		source_a = self._parent_account("BAC Sync Penjualan", group.name, account_number=f"5{self.tag}")
+		source_b = self._parent_account("BAC Sync Penjualan", group.name, account_number=f"6{self.tag}")
+		self.addCleanup(frappe.delete_doc, "Account", source_a.name)
+		self.addCleanup(frappe.delete_doc, "Account", source_b.name)
+		copy = frappe.get_doc(
+			{
+				"doctype": "Account",
+				"account_name": f"BAC Sync Penjualan {self.tag}",
+				"account_number": f"7{self.tag}",
+				"company": CHILD_A,
+				"parent_account": group_child,
+			}
+		)
+		copy.flags.ignore_root_company_validation = True
+		copy.insert()
+		self.addCleanup(frappe.delete_doc, "Account", copy.name)
+
+		with patch("account_bulk_config.api.coa_sync.frappe.publish_realtime") as publish:
+			run_job(PARENT, [CHILD_A], accounts=[source_a.name])
+
+		copy.reload()
+		self.assertEqual(copy.parent_account, group_child)
+		self.assertEqual(copy.account_number, f"7{self.tag}")
+		results = [c.args[1] for c in publish.call_args_list if c.args[0] == EVENT]
+		self.assertTrue(
+			any("BAC Sync Penjualan" in i for b in results for r in b["results"] for i in r["issues"])
+		)
+
+	def test_case_only_rename_replaces_the_copy(self):
+		ledger = self._parent_account("BAC Sync Case", self.cash)
+		apply(PARENT, [CHILD_A])
+		child = f"{ledger.account_name} - {CHILD_A_ABBR}"
+		lower = ledger.account_name.lower()
+		frappe.db.set_value("Account", ledger.name, "account_name", lower)
+
+		def drop(name):
+			if frappe.db.exists("Account", name):
+				frappe.delete_doc("Account", name, force=True)
+
+		self.addCleanup(drop, ledger.name)
+		self.addCleanup(drop, child)
+
+		[plan] = preview(PARENT, [CHILD_A])
+		[row] = [u for u in plan["update"] if u["account"] == child]
+		self.assertEqual(row["account_name"], lower)
+
+		out = apply(PARENT, [CHILD_A])
+		self.assertIn("job_id", out)
+		name = frappe.db.get_value("Account", {"company": CHILD_A, "account_name": lower}, "name")
+		self.assertEqual(name, f"{lower} - {CHILD_A_ABBR}")
+
+	def test_case_only_doc_rename_matches_the_old_copy(self):
+		ledger = self._parent_account("BAC Sync Doc Case", self.cash)
+		apply(PARENT, [CHILD_A])
+		child = f"{ledger.account_name} - {CHILD_A_ABBR}"
+		lower = ledger.account_name.lower()
+		new_doc = f"{lower} - {PARENT_ABBR}"
+		frappe.rename_doc("Account", ledger.name, new_doc, force=True, show_alert=False)
+		frappe.db.set_value("Account", new_doc, "account_name", lower)
+
+		def drop(name):
+			if frappe.db.exists("Account", name):
+				frappe.delete_doc("Account", name, force=True)
+
+		self.addCleanup(drop, new_doc)
+		self.addCleanup(drop, child)
+
+		[plan] = preview(PARENT, [CHILD_A], delete_missing=1)
+		self.assertEqual(_own([r["label"] for r in plan["create"]], self.tag), [])
+		self.assertNotIn(child, [r["account"] for r in plan["delete"]])
+		[row] = [u for u in plan["update"] if u["account"] == child]
+		self.assertEqual(row["account_name"], lower)
+
+		apply(PARENT, [CHILD_A])
+		name = frappe.db.get_value("Account", {"company": CHILD_A, "account_name": lower}, "name")
+		self.assertEqual(name, f"{lower} - {CHILD_A_ABBR}")
 
 	def test_renumbered_parent_account_renumbers_the_copy(self):
 		ledger = self._parent_account("BAC Sync Renomor", self.cash)
@@ -279,6 +476,31 @@ class TestCoaSync(IntegrationTestCase):
 
 		apply(PARENT, [CHILD_A], delete_missing=1)
 		self.assertFalse(frappe.db.exists("Account", child))
+
+	def test_used_accounts_stay_with_their_group(self):
+		group = self._parent_account("BAC Sync Grup Hapus", self.cash, is_group=1)
+		used = self._parent_account("BAC Sync Dipakai", group.name)
+		unused = self._parent_account("BAC Sync Tak Dipakai", group.name)
+		apply(PARENT, [CHILD_A])
+		group_child = f"{group.account_name} - {CHILD_A_ABBR}"
+		used_child = f"{used.account_name} - {CHILD_A_ABBR}"
+		unused_child = f"{unused.account_name} - {CHILD_A_ABBR}"
+		frappe.delete_doc("Account", used.name)
+		frappe.delete_doc("Account", unused.name)
+
+		with patch("account_bulk_config.api.coa_sync._used_accounts", return_value={used_child}):
+			[plan] = preview(PARENT, [CHILD_A], delete_missing=1)
+		self.assertIn(unused_child, [r["account"] for r in plan["delete"]])
+		self.assertNotIn(used_child, [r["account"] for r in plan["delete"]])
+		self.assertEqual([r["account"] for r in plan["kept"]], [used_child])
+
+		with patch("account_bulk_config.api.coa_sync._used_accounts", return_value={used_child}):
+			[result] = apply(PARENT, [CHILD_A], delete_missing=1)["results"]
+		self.assertEqual(result["kept"], [used_child])
+		self.assertGreaterEqual(result["deleted"], 1)
+		self.assertTrue(frappe.db.exists("Account", group_child))
+		self.assertTrue(frappe.db.exists("Account", used_child))
+		self.assertFalse(frappe.db.exists("Account", unused_child))
 
 	def test_renaming_in_parent_renames_the_copies(self):
 		self.assertEqual(
@@ -375,8 +597,7 @@ class TestCoaSync(IntegrationTestCase):
 		self.assertEqual(
 			[p["company"] for p in preview(CHILD_A, [CHILD_B, CHILD_A], any_company=1)], [CHILD_B]
 		)
-		[result] = apply(CHILD_A, [CHILD_B], any_company=1)["results"]
-		self.assertEqual(result["company"], CHILD_B)
+		run_job(CHILD_A, [CHILD_B], any_company=1)
 		self.assertEqual(_parent_of(CHILD_B, doc.account_name), f"Cash In Hand - {CHILD_B_ABBR}")
 
 	def test_copy_to_any_company_in_background_batches(self):

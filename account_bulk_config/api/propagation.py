@@ -5,6 +5,7 @@ import json
 import frappe
 from frappe import _
 
+from account_bulk_config.api.account_identity import swap_company_suffix
 from account_bulk_config.api.batch import CHILD_DOCTYPES, TARGETS
 from account_bulk_config.api.fields import COMPANY_SCOPED
 
@@ -26,23 +27,13 @@ def map_value(link: str, value: str | None, src_company: str, dst_company: str) 
 
 	src_abbr = frappe.get_cached_value("Company", src_company, "abbr")
 	dst_abbr = frappe.get_cached_value("Company", dst_company, "abbr")
-	mapped = _swap_abbr(value, src_abbr, dst_abbr)
+	mapped = swap_company_suffix(value, src_abbr, dst_abbr)
 	if mapped is None:
 		return (None, False)
 
 	doc_company = frappe.db.get_value(link, mapped, "company")
 	found = bool(doc_company and doc_company == dst_company)
 	return (mapped, found)
-
-
-def _swap_abbr(value: str, src_abbr: str | None, dst_abbr: str | None) -> str | None:
-	"""Replace the ' - <src_abbr>' suffix with ' - <dst_abbr>'; None if it cannot be mapped."""
-	if not src_abbr or not dst_abbr:
-		return None
-	suffix = f" - {src_abbr}"
-	if not value.endswith(suffix):
-		return None
-	return f"{value[: -len(suffix)]} - {dst_abbr}"
 
 
 def descendants(company: str, depth: str) -> list[str]:
@@ -124,8 +115,12 @@ def preview_propagation(
 		new_val = c.get("new") or None
 		for child in children_of[src_company]:
 			if link_doctype in COMPANY_SCOPED:
-				mapped_old = old_val and _swap_abbr(old_val, abbrs.get(src_company), abbrs.get(child))
-				mapped_new = new_val and _swap_abbr(new_val, abbrs.get(src_company), abbrs.get(child))
+				mapped_old = old_val and swap_company_suffix(
+					old_val, abbrs.get(src_company), abbrs.get(child)
+				)
+				mapped_new = new_val and swap_company_suffix(
+					new_val, abbrs.get(src_company), abbrs.get(child)
+				)
 				if mapped_new:
 					wanted.setdefault(link_doctype, set()).add(mapped_new)
 			else:

@@ -17,6 +17,8 @@ from frappe.utils import cint, cstr, now_datetime, sbool, time_diff_in_seconds
 from frappe.utils.background_jobs import is_job_enqueued
 from frappe.utils.nestedset import get_ancestors_of, get_descendants_of
 
+from account_bulk_config.api.account_identity import match_accounts
+
 # fields copied from a source account to its existing copies
 SYNC_FIELDS = ("account_type", "account_category", "freeze_account", "balance_must_be")
 SYNC_LIMIT = 30
@@ -79,34 +81,6 @@ def _number(acc: dict) -> str:
 	return cstr(acc.account_number).strip()
 
 
-def _matches(source: list[dict], accounts: list[dict]) -> dict:
-	"""Source account name -> the child's copy of it, each child account used once.
-
-	Same name and number first, so a fuzzier match never steals an exact one; then same name only:
-	a parent account renumbered after it was copied, or a child that numbered its own copy.
-	"""
-	by_name = {}
-	for acc in accounts:
-		by_name.setdefault(acc.account_name, []).append(acc)
-
-	out, taken = {}, set()
-
-	def pick(src, candidates):
-		for c in candidates:
-			if c.name not in taken:
-				taken.add(c.name)
-				out[src.name] = c
-				return
-
-	for src in source:
-		pick(src, [c for c in by_name.get(src.account_name) or [] if _number(c) == _number(src)])
-	for src in source:
-		if src.name not in out:
-			# prefer the unnumbered one when the child numbered its own copy differently
-			pick(src, sorted(by_name.get(src.account_name) or [], key=lambda c: bool(_number(c))))
-	return out
-
-
 def _norm(field: str, value) -> str:
 	# a blank freeze_account means "No", ERPNext's default
 	return value or ("No" if field == "freeze_account" else "")
@@ -127,10 +101,21 @@ def _with_ancestors(source: list[dict], names) -> list[dict]:
 
 
 def _plan_company(
-	source: list[dict], company: str, update_existing: bool, delete_missing: bool = False
+	source: list[dict],
+	source_company: str,
+	company: str,
+	update_existing: bool,
+	delete_missing: bool = False,
+	selected: list[dict] | None = None,
 ) -> dict:
 	accounts = _accounts(company)
-	matches = _matches(source, accounts)
+	matches, ambiguous = match_accounts(
+		source,
+		accounts,
+		frappe.get_cached_value("Company", source_company, "abbr"),
+		frappe.get_cached_value("Company", company, "abbr"),
+	)
+	protected = set().union(*ambiguous.values()) if ambiguous else set()
 	numbers = {_number(a): a.name for a in accounts if _number(a)}
 
 	# source account name -> its copy in the child: an existing account or one created below
@@ -138,7 +123,7 @@ def _plan_company(
 	create, update, issues = [], [], []
 	# child accounts holding a number the parent uses elsewhere: reported, so never deleted
 	conflicts = set()
-	for src in source:
+	for src in source if selected is None else selected:
 		parent = mapped.get(src.parent_account) if src.parent_account else None
 		if src.parent_account and not parent:
 			# an ancestor already failed; it is reported there
@@ -152,6 +137,13 @@ def _plan_company(
 			continue
 
 		existing = matches.get(src.name)
+		if not existing and src.name in ambiguous:
+			issues.append(
+				_(
+					"{0}: nama akun ini dipakai lebih dari satu akun di {1}; tidak bisa dipastikan yang mana"
+				).format(_label(src), company)
+			)
+			continue
 		if not existing and not src.parent_account:
 			# a company on another chart template: never grow a second tree beside its own roots
 			issues.append(
@@ -210,17 +202,33 @@ def _plan_company(
 			if _norm(f, existing[f]) != _norm(f, src[f]):
 				row["values"][f] = src[f]
 				row["changes"].append(f"{f}: {existing[f] or '-'} → {src[f] or '-'}")
-		if _number(src) and _number(src) != _number(existing):
-			if numbers.get(_number(src), existing.name) != existing.name:
-				conflicts.add(numbers[_number(src)])
+		if not existing.parent_account:
+			# ERPNext refuses to edit a root, so a stale root name/number can only be reported
+			if src.account_name != existing.account_name:
 				issues.append(
-					_("{0}: nomor akun {1} di {2} sudah dipakai {3}").format(
-						_label(src), _number(src), company, numbers[_number(src)]
+					_("{0}: akun akar di {1} bernama {2}").format(_label(src), company, existing.account_name)
+				)
+			if _number(src) and _number(src) != _number(existing):
+				issues.append(
+					_("{0}: akun akar di {1} bernomor {2}").format(
+						_label(src), company, _number(existing) or "-"
 					)
 				)
-			else:
-				row["account_number"] = _number(src)
-				row["changes"].append(f"account_number: {_number(existing) or '-'} → {_number(src)}")
+		else:
+			if src.account_name != existing.account_name:
+				row["account_name"] = src.account_name
+				row["changes"].append(f"account_name: {existing.account_name} → {src.account_name}")
+			if _number(src) and _number(src) != _number(existing):
+				if numbers.get(_number(src), existing.name) != existing.name:
+					conflicts.add(numbers[_number(src)])
+					issues.append(
+						_("{0}: nomor akun {1} di {2} sudah dipakai {3}").format(
+							_label(src), _number(src), company, numbers[_number(src)]
+						)
+					)
+				else:
+					row["account_number"] = _number(src)
+					row["changes"].append(f"account_number: {_number(existing) or '-'} → {_number(src)}")
 		if parent and (parent["source"] or parent["name"] != existing.parent_account):
 			row["parent_account"] = parent["name"]
 			row["parent_source"] = parent["source"]
@@ -228,30 +236,59 @@ def _plan_company(
 		if row["changes"]:
 			update.append(row)
 
-	delete = _deletable(accounts, matches, conflicts) if delete_missing else []
-	return {"company": company, "create": create, "update": update, "delete": delete, "issues": issues}
+	delete, kept = _deletable(accounts, matches, conflicts, protected) if delete_missing else ([], [])
+	return {
+		"company": company,
+		"create": create,
+		"update": update,
+		"delete": delete,
+		"kept": kept,
+		"issues": issues,
+	}
 
 
-def _deletable(accounts: list[dict], matches: dict, conflicts: set) -> list[dict]:
-	"""Child accounts with no counterpart in the parent, deepest first; groups only when emptied."""
-	kept_names = conflicts | {a.name for a in matches.values()}
+def _used_accounts(accounts: list[dict], skip: set) -> set:
+	"""Target accounts that already have a GL Entry, so ERPNext refuses to delete them."""
+	names = [a.name for a in accounts if a.name not in skip]
+	if not names:
+		return set()
+	return set(frappe.get_all("GL Entry", filters={"account": ["in", names]}, pluck="account"))
+
+
+def _deletable(
+	accounts: list[dict], matches: dict, conflicts: set, protected: set | None = None
+) -> tuple[list[dict], list[dict]]:
+	"""Child accounts with no counterpart in the parent, deepest first; groups only when emptied.
+
+	Accounts with a GL Entry, and ambiguous candidates with their branches, stay.
+	"""
+	matched = {a.name for a in matches.values()}
+	protected = set(protected or ())
+	used = _used_accounts(accounts, matched | conflicts | protected)
+	for group in [a for a in accounts if a.name in protected and a.is_group]:
+		protected |= {a.name for a in accounts if group.lft < a.lft and a.rgt < group.rgt}
+	kept_names = conflicts | matched | used | protected
 	kept = [a for a in accounts if a.name in kept_names]
 	missing = [a for a in accounts if a.parent_account and a.name not in kept_names]
 	# a group that still holds a kept account stays
 	missing = [a for a in missing if not a.is_group or not any(a.lft < k.lft and k.rgt < a.rgt for k in kept)]
-	return [{"account": a.name, "label": a.name} for a in sorted(missing, key=lambda a: -a.lft)]
+	return (
+		[{"account": a.name, "label": a.name} for a in sorted(missing, key=lambda a: -a.lft)],
+		[{"account": a.name, "label": a.name} for a in accounts if a.name in used],
+	)
 
 
 def _plan(
 	parent_company, companies=None, accounts=None, update_existing=True, delete_missing=False, any_company=0
 ) -> list[dict]:
 	source = _accounts(parent_company)
+	selected = None
 	if accounts:
-		source = _with_ancestors(source, accounts)
-		# a partial source says nothing about which child accounts are gone
+		# match against the full COA, but only write the saved account and its ancestors
+		selected = _with_ancestors(source, accounts)
 		delete_missing = False
 	return [
-		_plan_company(source, c, cint(update_existing), cint(delete_missing))
+		_plan_company(source, parent_company, c, cint(update_existing), cint(delete_missing), selected)
 		for c in _targets(parent_company, companies, any_company)
 	]
 
@@ -302,13 +339,15 @@ def apply(
 		any_company=any_company,
 	)
 	total = _size(plans)
-	# renumbering renames the account and every link to it, too slow for a web request
-	renames = any("account_number" in u for p in plans for u in p["update"])
+	# renaming touches every link to the account, too slow for a web request
+	renames = any("account_number" in u or "account_name" in u for p in plans for u in p["update"])
 	if total <= SYNC_LIMIT and not renames:
 		return {"results": _apply_plans(parent_company, plans)}
 
 	job_id = f"bac_coa_{frappe.generate_hash(length=12)}"
-	pending = [p["company"] for p in plans if p["create"] or p["update"] or p["delete"] or p["issues"]]
+	pending = [
+		p["company"] for p in plans if p["create"] or p["update"] or p["delete"] or p["issues"] or p["kept"]
+	]
 	_enqueue_next(
 		"run_job",
 		"long",
@@ -495,6 +534,7 @@ def _apply_plans(parent_company: str, plans: list[dict], commit: bool = False) -
 			"created": 0,
 			"updated": 0,
 			"deleted": 0,
+			"kept": [r["label"] for r in plan.get("kept") or []],
 			"issues": list(plan["issues"]),
 			"error": None,
 		}
@@ -532,7 +572,9 @@ def _apply_company(plan: dict, parent_currency: str, result: dict) -> None:
 
 	updated = set()
 	for row in plan["update"]:
-		if "account_number" in row and run(row["label"], lambda row=row: _renumber(row, renamed)):
+		if ("account_name" in row or "account_number" in row) and run(
+			row["label"], lambda row=row: _rename_row(row, renamed)
+		):
 			updated.add(row["account"])
 
 	for row in plan["create"]:
@@ -594,10 +636,13 @@ def _update(account: str, values: dict) -> None:
 	doc.save()
 
 
-def _renumber(row: dict, renamed: dict) -> None:
+def _rename_row(row: dict, renamed: dict) -> None:
 	account = row["account"]
+	current = frappe.db.get_value("Account", account, ["account_name", "account_number"], as_dict=True)
 	new_name = _rename(
-		account, frappe.db.get_value("Account", account, "account_name"), row["account_number"]
+		account,
+		row.get("account_name", current.account_name),
+		row.get("account_number", current.account_number),
 	)
 	if new_name != account:
 		renamed[account] = new_name
@@ -609,10 +654,16 @@ def _rename(account: str, account_name: str, account_number: str | None) -> str:
 
 	account_name, account_number = account_name.strip(), cstr(account_number).strip()
 	doc = frappe.get_doc("Account", account)
+	if not doc.parent_account:
+		frappe.throw(_("Akun akar {0} tidak bisa diganti nama atau nomornya").format(doc.name))
 	doc.validate_account_number(account_number)
 	frappe.db.set_value("Account", account, {"account_name": account_name, "account_number": account_number})
 	new_name = get_autoname_with_number(account_number, account_name, doc.company)
 	if new_name != account:
+		# a case-only rename resolves to this same document; only another owner is a collision
+		existing = frappe.db.get_value("Account", new_name, "name")
+		if existing and existing.lower() != account.lower():
+			frappe.throw(_("Akun {0} sudah ada di {1}").format(existing, doc.company))
 		frappe.rename_doc("Account", account, new_name, force=True, show_alert=False)
 	return new_name
 

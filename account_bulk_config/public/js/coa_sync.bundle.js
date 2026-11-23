@@ -30,15 +30,17 @@ function preview_html(plans) {
 			);
 			const update = p.update.map((r) => `${esc(r.account)}: ${r.changes.map(esc).join(", ")}`);
 			const remove = (p.delete || []).map((r) => esc(r.label));
+			const keep = (p.kept || []).map((r) => esc(r.label));
 			const issues = p.issues.map(esc);
 			const nothing =
-				!create.length && !update.length && !remove.length && !issues.length
+				!create.length && !update.length && !remove.length && !keep.length && !issues.length
 					? `<div class="text-muted">${__("Sudah sama dengan parent.")}</div>`
 					: "";
-			return `<div class="mb-3"><b>${esc(p.company)}</b> · ${__("Dibuat")}: <b>${create.length}</b> · ${__("Diupdate")}: <b>${update.length}</b> · ${__("Dihapus")}: <b>${remove.length}</b> · ${__("Bermasalah")}: <b>${issues.length}</b>
+			return `<div class="mb-3"><b>${esc(p.company)}</b> · ${__("Dibuat")}: <b>${create.length}</b> · ${__("Diupdate")}: <b>${update.length}</b> · ${__("Dihapus")}: <b>${remove.length}</b>${keep.length ? ` · ${__("Tetap")}: <b>${keep.length}</b>` : ""} · ${__("Bermasalah")}: <b>${issues.length}</b>
 				${create.length ? `<div class="mt-1">${__("Akun baru")}:</div>${list(create)}` : ""}
 				${update.length ? `<div class="mt-1">${__("Akun diupdate")}:</div>${list(update)}` : ""}
 				${remove.length ? `<div class="mt-1 text-danger">${__("Akun dihapus")}:</div>${list(remove)}` : ""}
+				${keep.length ? `<div class="mt-1 text-muted">${__("Tetap (punya transaksi)")}:</div>${list(keep)}` : ""}
 				${issues.length ? `<div class="mt-1 text-danger">${__("Dilewati")}:</div>${list(issues)}` : ""}${nothing}</div>`;
 		})
 		.join("");
@@ -55,8 +57,9 @@ function show_results(results, title, error) {
 				.map(
 					(
 						r,
-					) => `<div class="mb-3"><b>${esc(r.company)}</b> · ${__("Dibuat")}: <b>${r.created}</b> · ${__("Diupdate")}: <b>${r.updated}</b> · ${__("Dihapus")}: <b>${r.deleted || 0}</b>
+					) => `<div class="mb-3"><b>${esc(r.company)}</b> · ${__("Dibuat")}: <b>${r.created}</b> · ${__("Diupdate")}: <b>${r.updated}</b> · ${__("Dihapus")}: <b>${r.deleted || 0}</b>${r.kept && r.kept.length ? ` · ${__("Tetap")}: <b>${r.kept.length}</b>` : ""}
 				${r.error ? `<div class="text-danger">${__("Gagal, tidak ada yang disimpan")}: ${esc(r.error)}</div>` : ""}
+				${r.kept && r.kept.length ? `<div class="text-muted">${__("Tetap (punya transaksi)")}:</div>${list(r.kept.map(esc))}` : ""}
 				${r.issues.length ? `<div class="text-danger">${__("Dilewati")}:</div>${list(r.issues.map(esc))}` : ""}</div>`,
 				)
 				.join(""),
@@ -87,7 +90,7 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 			{
 				fieldname: "update_existing",
 				label: __(
-					"Samakan juga induk akun, nomor akun, Account Type, Account Category, Freeze dan Balance Must Be di akun yang sudah ada",
+					"Samakan juga induk akun, nomor akun, nama akun, Account Type, Account Category, Freeze dan Balance Must Be di akun yang sudah ada",
 				),
 				fieldtype: "Check",
 				default: 1,
@@ -125,7 +128,7 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 				fieldname: "help",
 				fieldtype: "HTML",
 				options: `<p class="text-muted small">${__(
-					"Akun dicocokkan berdasarkan nama (dan nomor akun bila ada). Akun yang belum ada dibuat di bawah induk akun yang sama, induknya ikut dibuat bila perlu; akun akar (Asset, Liability, dst.) tidak pernah dibuat. Akun yang hanya ada di company tujuan tidak disentuh, kecuali opsi hapus dicentang.",
+					"Akun dicocokkan berdasarkan nama dokumen (suffix company), nomor akun, lalu nama yang unik; induk akun dipakai sebagai penentu terakhir. Nama akun yang berubah di sumber ikut diganti di tujuan saat opsi update aktif. Akun yang belum ada dibuat di bawah induk akun yang sama, induknya ikut dibuat bila perlu; akun akar (Asset, Liability, dst.) tidak pernah dibuat. Akun yang hanya ada di company tujuan tidak disentuh, kecuali opsi hapus dicentang; akun yang sudah punya transaksi tetap.",
 				)}</p>`,
 			},
 			{ fieldname: "preview", fieldtype: "HTML" },
@@ -194,10 +197,15 @@ account_bulk_config.coa_sync_dialog = function (parent_company) {
 				);
 				if (!total) {
 					const issues = plans.reduce((n, p) => n + p.issues.length, 0);
+					const kept = plans.reduce((n, p) => n + (p.kept || []).length, 0);
 					frappe.show_alert({
 						message: issues
 							? __("Tidak ada yang bisa disalin; {0} akun bermasalah, lihat preview", [issues])
-							: __("COA company tujuan sudah sama dengan company sumber"),
+							: kept
+								? __("Tidak ada yang perlu disalin; {0} akun tetap karena sudah punya transaksi", [
+										kept,
+									])
+								: __("COA company tujuan sudah sama dengan company sumber"),
 						indicator: issues ? "orange" : "green",
 					});
 					return;
